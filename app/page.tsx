@@ -1467,19 +1467,25 @@ function ProjectDashboard({
 
         {!showExampleGuide ? (
           <button
-            className="group min-h-64 rounded-2xl border border-blue-200 bg-blue-50 p-7 text-left text-slate-900 shadow-sm transition hover:-translate-y-1 hover:border-blue-400 hover:shadow-lg"
+            className="group min-h-64 rounded-2xl border border-slate-200 bg-white p-7 text-left text-slate-900 shadow-sm transition hover:-translate-y-1 hover:border-blue-400 hover:shadow-lg"
             onClick={onShowExampleGuide}
             type="button"
           >
-            <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-blue-600 text-xl font-bold text-white shadow-sm transition group-hover:scale-105">
-              ?
+            <span className="flex items-start justify-between gap-3">
+              <span className="rounded-lg bg-blue-600 px-3 py-1 text-xs font-bold uppercase tracking-wider text-white">
+                Guided example
+              </span>
+              <span className="text-xl text-blue-500 transition group-hover:translate-x-1">→</span>
             </span>
-            <span className="mt-8 block text-xs font-bold uppercase tracking-wider text-blue-600">
-              Example path
+            <span className="mt-7 block text-2xl font-bold">CAD Handoff Tutorial</span>
+            <span className="mt-2 inline-flex rounded-full bg-blue-50 px-2.5 py-1 text-xs font-bold text-blue-700 ring-1 ring-blue-100">
+              Creo · Example project
             </span>
-            <span className="mt-2 block text-xl font-bold">How CAD Handoff works</span>
-            <span className="mt-2 block text-sm leading-6 text-slate-600">
+            <span className="mt-3 block text-sm leading-6 text-slate-600">
               Walk through the CAD handoff workflow step by step.
+            </span>
+            <span className="mt-6 block border-t border-slate-100 pt-4 text-sm font-semibold text-slate-700">
+              Open the pre-built example path
             </span>
           </button>
         ) : null}
@@ -1574,57 +1580,121 @@ function ExamplePathGuide({ onClose }: { onClose: () => void }) {
   const [currentStep, setCurrentStep] = useState(0);
   const steps = [
     {
-      title: "Create a project path",
-      text: "Start a workspace for one CAD system. Give it a clear name, description, and CAD software.",
-      targetX: 98,
+      target: "project-details",
+      title: "Open an existing project path",
+      text: "You opened the CAD Handoff Tutorial tile just like any other existing project. This is a complete example path, with an approved primary model and contributor work already in progress.",
+      action: "Check this header before uploading so a model never lands in the wrong project.",
     },
     {
+      target: "new-branch",
       title: "Create your working branch",
-      text: "Branch from the latest primary model, then identify the contributor and software used on that branch.",
-      targetX: 392,
+      text: "Select New Working Branch whenever you want to develop an idea without replacing the approved primary model.",
+      action: "Name the branch for the person or change being developed, then record the CAD software being used.",
     },
     {
-      title: "Upload versions",
-      text: "Add ZIP, PRT, ASM, STEP, or STP files. Every upload becomes the next numbered version on that branch.",
-      targetX: 650,
+      target: "branch-source",
+      title: "Choose exactly where to branch",
+      text: "The Branch from menu can use the current primary, an earlier primary, or a version on another branch. The connector records where the work originated.",
+      action: "For this example, the contributor starts from Primary 1: baseline_model.step.",
     },
     {
-      title: "Review the tree",
-      text: "Use Go to current, Primary only, or Collapse branch to navigate large handoff histories.",
-      targetX: 790,
+      target: "version-one",
+      title: "Upload the first working copy",
+      text: "Choose the new branch in the upload panel, select a ZIP, PRT, ASM, STEP, or STP file, and describe what changed.",
+      action: "Uploading creates Version 1 without changing the primary path. Descriptions help reviewers understand the purpose of each file.",
     },
     {
+      target: "version-two",
+      title: "Continue developing the branch",
+      text: "Use Add version to upload another iteration. Versions stay ordered from left to right so the full development history remains visible.",
+      action: "Never overwrite an earlier file—upload the next version so the team can trace and recover prior work.",
+    },
+    {
+      target: "branch-here",
+      title: "Start another idea from any version",
+      text: "Select Branch here on a branch, or choose an earlier version in the Branch from menu, to explore a different idea from that exact model.",
+      action: "The new connector starts at Version 1, making the relationship between the two working paths obvious.",
+    },
+    {
+      target: "review",
+      title: "Download and review candidate files",
+      text: "Each online version has a Download link. Teammates can inspect the candidate in their CAD software without promoting it first.",
+      action: "Agree as a team which latest branch version should become the next approved primary model.",
+    },
+    {
+      target: "merge-action",
       title: "Add the agreed version to Primary",
-      text: "The latest branch version reconnects to the blue primary path and becomes the current model.",
-      targetX: 1022,
+      text: "The branch owner selects Add to Primary after review. The latest version on that branch becomes the current primary for this project.",
+      action: "Only merge an agreed version. The branch closes after merging, but its history remains visible.",
+    },
+    {
+      target: "current-primary",
+      title: "Follow the completed merge",
+      text: "The green line reconnects the branch to the blue primary path. The promoted file is labeled Current, while previous primary versions remain in the timeline.",
+      action: "Future branches can now start from this current model or from any earlier online version.",
+    },
+    {
+      target: "tree-controls",
+      title: "Navigate a large tree",
+      text: "Go to current jumps to the newest approved model. Primary only hides branch detail, Collapse reduces individual branches, and zoom changes the scale of the whole tree.",
+      action: "These controls only change the view; they never modify or delete CAD history.",
+    },
+    {
+      target: "archive",
+      title: "Export older files when storage fills",
+      text: "The archive control collects eligible early files into a ZIP of up to 250 MB. After the download succeeds, those Storage objects can be removed while their names stay in the tree.",
+      action: "Move the downloaded ZIP to your team archive. Offline versions remain labeled Archived and cannot be downloaded from the website.",
     },
   ];
   const step = steps[currentStep];
-  const nodeClass = (stepIndex: number, color: string) =>
-    `absolute w-44 rounded-xl border-2 p-4 shadow-sm transition ${color} ${
-      currentStep === stepIndex ? "scale-105 ring-4 ring-blue-400/40" : "opacity-70"
-    }`;
+  const spotlight = (target: string) =>
+    step.target === target
+      ? "relative z-20 scale-[1.04] ring-4 ring-blue-400 ring-offset-4 ring-offset-slate-50 shadow-xl"
+      : "opacity-45";
+  const spotlightAny = (...targets: string[]) =>
+    targets.includes(step.target)
+      ? "relative z-20 scale-[1.04] ring-4 ring-blue-400 ring-offset-4 ring-offset-slate-50 shadow-xl"
+      : "opacity-45";
+  const targetPositions: Record<string, { x: number; y: number }> = {
+    "new-branch": { x: 1170, y: 55 },
+    "tree-controls": { x: 900, y: 55 },
+    "branch-source": { x: 425, y: 210 },
+    "version-one": { x: 645, y: 385 },
+    "version-two": { x: 885, y: 385 },
+    "branch-here": { x: 640, y: 445 },
+    review: { x: 900, y: 445 },
+    "merge-action": { x: 940, y: 490 },
+    "current-primary": { x: 1175, y: 210 },
+    archive: { x: 1130, y: 570 },
+  };
+  const targetPosition = targetPositions[step.target];
 
   return (
     <div
       aria-labelledby="example-guide-title"
       aria-modal="true"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-50 bg-slate-100"
       role="dialog"
     >
-      <section className="max-h-[94vh] w-full max-w-6xl overflow-hidden rounded-2xl bg-white shadow-2xl">
-        <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-6 py-5 sm:px-8">
-          <div>
-            <p className="text-xs font-bold uppercase tracking-[0.18em] text-blue-600">
+      <section className="h-screen w-full overflow-hidden bg-slate-100">
+        <div className={`flex items-start justify-between gap-4 bg-[linear-gradient(135deg,_#0d3157_0%,_#061a33_100%)] px-6 py-5 text-white shadow-lg transition sm:px-10 ${spotlight("project-details")}`}>
+          <div className="flex items-start gap-5">
+            <button className="mt-1 rounded-lg border border-white/25 bg-white/10 px-3 py-2 text-sm font-semibold hover:bg-white/20" onClick={onClose} type="button">
+              ← Home
+            </button>
+            <div>
+            <p className="text-xs font-bold uppercase tracking-[0.18em] text-blue-300">
               Example path · Step {currentStep + 1} of {steps.length}
             </p>
             <h3 className="mt-1 text-2xl font-bold" id="example-guide-title">
-              Walk through the CAD handoff workflow
+              Tunnel Payload Assembly
             </h3>
+            <p className="mt-1 text-sm text-slate-300">Project CAD · Creo · Guided training workspace</p>
+            </div>
           </div>
           <button
             aria-label="Close example walkthrough"
-            className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-300 text-xl text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+            className="flex h-9 w-9 items-center justify-center rounded-full border border-white/30 bg-white/10 text-xl text-white hover:bg-white/20"
             onClick={onClose}
             type="button"
           >
@@ -1632,73 +1702,125 @@ function ExamplePathGuide({ onClose }: { onClose: () => void }) {
           </button>
         </div>
 
-        <div className="max-h-[calc(94vh-170px)] overflow-auto p-6 sm:p-8">
-          <div className="overflow-x-auto rounded-xl bg-slate-50 p-4 ring-1 ring-slate-200">
-            <div className="relative h-[390px] w-[1140px]">
-              <svg aria-hidden="true" className="absolute inset-0" height="390" width="1140">
-                <path d="M 186 94 H 260" fill="none" stroke="#3b82f6" strokeWidth="4" />
-                <path d="M 436 94 H 946" fill="none" stroke="#3b82f6" strokeWidth="4" />
-                <path d="M 348 140 V 270 H 560" fill="none" stroke="#f59e0b" strokeWidth="4" />
-                <path d="M 736 270 H 776" fill="none" stroke="#f59e0b" strokeWidth="4" />
-                <path d="M 952 270 H 1034 V 140" fill="none" stroke="#10b981" strokeWidth="4" />
+        <div className="max-h-[calc(100vh-166px)] overflow-auto p-5 sm:p-7">
+          <div className="overflow-x-auto rounded-xl bg-white shadow-sm ring-1 ring-slate-200">
+            <div className="relative h-[610px] w-[1280px] p-5">
+              <div className="absolute left-5 top-5">
+                <p className="text-xs font-bold uppercase tracking-wider text-blue-600">Version tree</p>
+                <p className="mt-1 text-sm text-slate-500">Branches move left to right and reconnect when merged.</p>
+              </div>
+              <div className={`absolute left-[650px] top-5 flex gap-2 rounded-xl bg-white p-3 shadow-sm ring-1 ring-slate-200 transition ${spotlight("tree-controls")}`}>
+                <span className="rounded border px-3 py-2 text-xs font-bold">Go to current →</span>
+                <span className="rounded border px-3 py-2 text-xs font-bold">Primary only</span>
+                <span className="rounded border px-3 py-2 text-xs font-bold">− 100% +</span>
+              </div>
+
+              <button className={`absolute right-6 top-6 rounded-lg bg-blue-600 px-4 py-3 text-xs font-bold text-white transition ${spotlight("new-branch")}`} type="button">
+                + New Working Branch
+              </button>
+
+              <svg aria-hidden="true" className="absolute left-0 top-0" height="610" width="1280">
+                <defs>
+                  <marker id="tutorial-arrow" markerHeight="8" markerWidth="8" orient="auto" refX="7" refY="4">
+                    <path d="M0,0 L8,4 L0,8 Z" fill="#2563eb" />
+                  </marker>
+                </defs>
+                <path d="M 135 210 H 330" fill="none" stroke="#3b82f6" strokeWidth="4" />
+                <path d="M 520 210 H 1080" fill="none" stroke="#3b82f6" strokeWidth="4" />
+                <path d="M 425 270 V 385 H 555" fill="none" stroke="#f59e0b" strokeWidth="4" />
+                <path d="M 735 385 H 795" fill="none" stroke="#f59e0b" strokeWidth="4" />
+                <path d="M 975 385 H 1170 V 270" fill="none" stroke="#10b981" strokeWidth="4" />
+                <path d="M 645 455 V 535 H 795" fill="none" stroke="#a855f7" strokeWidth="4" />
+                {targetPosition ? (
+                  <path
+                    d={`M 525 515 Q ${(525 + targetPosition.x) / 2} ${Math.min(470, targetPosition.y + 80)} ${targetPosition.x} ${targetPosition.y}`}
+                    fill="none"
+                    markerEnd="url(#tutorial-arrow)"
+                    stroke="#2563eb"
+                    strokeDasharray="7 6"
+                    strokeWidth="3"
+                  />
+                ) : null}
               </svg>
 
-              <div
-                className="absolute top-0 z-20 -translate-x-1/2 text-center text-blue-600 transition-all duration-300"
-                style={{ left: step.targetX }}
-              >
-                <span className="rounded-full bg-blue-600 px-3 py-1 text-xs font-bold text-white shadow-lg">
-                  Step {currentStep + 1}
-                </span>
-                <span className="block text-4xl font-black leading-8">↓</span>
+              <div className="absolute left-8 top-[175px] w-44 rounded-xl border-2 border-blue-300 bg-blue-50 p-4 shadow-sm">
+                <p className="text-[10px] font-bold uppercase text-blue-600">Project origin</p>
+                <p className="mt-1 text-sm font-bold">Primary starts here</p>
+              </div>
+              <div className={`absolute left-[330px] top-[155px] w-48 rounded-xl border-2 border-blue-400 bg-white p-4 shadow-sm transition ${spotlight("branch-source")}`}>
+                <p className="text-[10px] font-bold uppercase text-blue-600">Primary 1</p>
+                <p className="mt-1 text-sm font-bold">baseline_model.step</p>
+                <p className="mt-1 text-xs text-slate-500">Approved starting model</p>
+              </div>
+              <div className={`absolute left-[1080px] top-[155px] w-48 rounded-xl border-2 border-blue-400 bg-white p-4 shadow-sm transition ${spotlight("current-primary")}`}>
+                <p className="text-[10px] font-bold uppercase text-blue-600">Primary 2 · Current</p>
+                <p className="mt-1 text-sm font-bold">accepted_model.step</p>
+                <p className="mt-1 text-xs text-slate-500">Merged and approved</p>
               </div>
 
-              <div className={nodeClass(0, "border-blue-300 bg-blue-50")} style={{ left: 10, top: 60 }}>
-                <p className="text-xs font-bold uppercase text-blue-600">Project origin</p>
-                <p className="mt-1 font-bold">Create project path</p>
-                <p className="mt-1 text-xs text-slate-500">Project CAD software</p>
+              <div className="absolute left-[370px] top-[325px] w-44 rounded-xl border-l-4 border-amber-400 bg-white p-3 shadow-sm">
+                <p className="text-[10px] font-bold uppercase text-amber-600">Working branch</p>
+                <p className="mt-1 text-sm font-bold">Alex · inlet revision</p>
+                <p className="mt-1 text-[10px] font-bold text-blue-600">Fusion 360</p>
               </div>
-              <div
-                className="absolute w-44 rounded-xl border-2 border-blue-300 bg-blue-50 p-4 opacity-70 shadow-sm"
-                style={{ left: 260, top: 60 }}
-              >
-                <p className="text-xs font-bold uppercase text-blue-600">Primary 1</p>
-                <p className="mt-1 font-bold">baseline_model.step</p>
-                <p className="mt-1 text-xs text-slate-500">Current approved model</p>
+              <div className={`absolute left-[555px] top-[325px] w-44 rounded-xl border-2 border-amber-300 bg-white p-3 shadow-sm transition ${spotlightAny("version-one", "branch-here")}`}>
+                <p className="text-[10px] font-bold uppercase text-amber-600">Version 1</p>
+                <p className="mt-1 text-sm font-bold">inlet_concept.step</p>
+                <p className="mt-1 text-xs text-slate-500">Initial inlet change</p>
+                <button className={`mt-3 text-[10px] font-bold text-blue-600 ${spotlight("branch-here")}`} type="button">Branch here</button>
               </div>
-              <div className={nodeClass(4, "border-emerald-300 bg-emerald-50")} style={{ left: 946, top: 60 }}>
-                <p className="text-xs font-bold uppercase text-emerald-700">Primary 2 · Current</p>
-                <p className="mt-1 font-bold">accepted_model.step</p>
-                <p className="mt-1 text-xs text-slate-500">Merged from branch</p>
+              <div className={`absolute left-[795px] top-[325px] w-44 rounded-xl border-2 border-amber-300 bg-white p-3 shadow-sm transition ${spotlightAny("version-two", "review")}`}>
+                <p className="text-[10px] font-bold uppercase text-amber-600">Version 2 · Latest</p>
+                <p className="mt-1 text-sm font-bold">inlet_reviewed.step</p>
+                <p className="mt-1 text-xs text-slate-500">Ready for team review</p>
+                <span className="mt-3 block text-right text-[10px] font-bold text-blue-600">Download</span>
               </div>
-              <div className={nodeClass(1, "border-amber-300 bg-amber-50")} style={{ left: 304, top: 225 }}>
-                <p className="text-xs font-bold uppercase text-amber-700">Working branch</p>
-                <p className="mt-1 font-bold">Contributor branch</p>
-                <p className="mt-1 text-xs text-slate-500">Branch CAD software</p>
+              <button className={`absolute left-[890px] top-[475px] rounded bg-emerald-600 px-3 py-2 text-xs font-bold text-white transition ${spotlight("merge-action")}`} type="button">
+                Add to Primary
+              </button>
+
+              <div className="absolute left-[610px] top-[510px] w-44 rounded-xl border-l-4 border-purple-500 bg-white p-3 shadow-sm">
+                <p className="text-[10px] font-bold uppercase text-purple-600">Alternate branch</p>
+                <p className="mt-1 text-sm font-bold">Started from Version 1</p>
               </div>
-              <div className={nodeClass(2, "border-amber-300 bg-amber-50")} style={{ left: 560, top: 235 }}>
-                <p className="text-xs font-bold uppercase text-amber-700">Version 1</p>
-                <p className="mt-1 font-bold">working_copy.step</p>
-                <p className="mt-1 text-xs text-slate-500">Upload and describe</p>
+              <div className="absolute left-[795px] top-[510px] w-44 rounded-xl border-2 border-purple-300 bg-white p-3 shadow-sm">
+                <p className="text-[10px] font-bold uppercase text-purple-600">Version 1</p>
+                <p className="mt-1 text-sm font-bold">alternate_inlet.step</p>
               </div>
-              <div className={nodeClass(3, "border-amber-300 bg-amber-50")} style={{ left: 776, top: 235 }}>
-                <p className="text-xs font-bold uppercase text-amber-700">Latest version</p>
-                <p className="mt-1 font-bold">reviewed_copy.step</p>
-                <p className="mt-1 text-xs text-slate-500">Review before merge</p>
+
+              <div className={`absolute bottom-5 right-6 rounded-xl border border-slate-300 bg-white px-4 py-3 shadow-sm transition ${spotlight("archive")}`}>
+                <p className="text-[10px] font-bold uppercase text-slate-500">Storage archive</p>
+                <p className="mt-1 text-xs font-bold">Export earliest files · up to 250 MB</p>
+              </div>
+
+              <div className="absolute bottom-5 left-6 z-30 w-[500px] rounded-xl border border-blue-300 bg-white p-5 shadow-2xl">
+                <div className="flex items-center gap-2">
+                  <span className="rounded-full bg-blue-600 px-2.5 py-1 text-[10px] font-bold text-white">{currentStep + 1}</span>
+                  <p className="text-xs font-bold uppercase tracking-wider text-blue-600">Guided walkthrough</p>
+                </div>
+                <h4 className="mt-2 text-lg font-bold">{step.title}</h4>
+                <p className="mt-1 text-sm leading-5 text-slate-600">{step.text}</p>
+                <p className="mt-2 text-sm font-semibold leading-5 text-slate-800">What to do: {step.action}</p>
+                <span className="absolute -top-3 left-10 h-6 w-6 rotate-45 border-l border-t border-blue-300 bg-white" />
               </div>
             </div>
-          </div>
-
-          <div className="mt-5 rounded-xl border border-blue-200 bg-blue-50 p-5">
-            <p className="text-xs font-bold uppercase tracking-wider text-blue-600">
-              Step {currentStep + 1}
-            </p>
-            <h4 className="mt-1 text-xl font-bold">{step.title}</h4>
-            <p className="mt-2 leading-6 text-slate-600">{step.text}</p>
           </div>
         </div>
 
         <div className="flex items-center justify-between border-t border-slate-200 px-6 py-4 sm:px-8">
+          <div className="flex items-center gap-1.5" aria-label="Walkthrough progress">
+            {steps.map((guideStep, index) => (
+              <button
+                aria-label={`Go to step ${index + 1}: ${guideStep.title}`}
+                className={`h-2.5 rounded-full transition ${
+                  index === currentStep ? "w-7 bg-blue-600" : "w-2.5 bg-slate-300 hover:bg-slate-400"
+                }`}
+                key={guideStep.title}
+                onClick={() => setCurrentStep(index)}
+                type="button"
+              />
+            ))}
+          </div>
           <button
             className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
             disabled={currentStep === 0}
