@@ -127,6 +127,7 @@ export default function Home() {
   const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [isCreatingBranch, setIsCreatingBranch] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [isSigningOut, setIsSigningOut] = useState(false);
   const [mergingBranchId, setMergingBranchId] = useState<DatabaseId | null>(null);
   const [deletingProjectId, setDeletingProjectId] = useState<DatabaseId | null>(null);
   const [deletingBranchId, setDeletingBranchId] = useState<DatabaseId | null>(null);
@@ -291,6 +292,8 @@ export default function Home() {
     () => packages.find((cadPackage) => cadPackage.is_primary) ?? null,
     [packages],
   );
+
+  const isAdmin = currentUser.trim().toLowerCase() === "admin";
 
   const primaryHistory = useMemo(
     () =>
@@ -671,6 +674,40 @@ export default function Home() {
     }
   }
 
+  async function signOut() {
+    const confirmed = window.confirm(
+      "Sign out of this anonymous session? Re-entering the same name later will create a different user and will not restore ownership of your existing paths or branches.",
+    );
+    if (!confirmed) return;
+
+    setIsSigningOut(true);
+    setErrorMessage("");
+    setStatusMessage("");
+
+    try {
+      const { error } = await supabase.auth.signOut();
+      if (error) throw error;
+
+      setName("");
+      setCurrentUser("");
+      setCurrentUserId("");
+      setProjects([]);
+      setSelectedProject(null);
+      setBranches([]);
+      setPackages([]);
+      setShowProjectForm(false);
+      setShowBranchForm(false);
+      setSelectedBranchId("");
+      setSelectedFile(null);
+      setVersionDescription("");
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    } catch (error) {
+      setErrorMessage(`Could not sign out. ${getErrorMessage(error)}`);
+    } finally {
+      setIsSigningOut(false);
+    }
+  }
+
   function returnToProjects() {
     setSelectedProject(null);
     setBranches([]);
@@ -753,8 +790,23 @@ export default function Home() {
             </button>
           </div>
 
-          <div className="w-fit rounded-full bg-white px-4 py-2 shadow-lg ring-1 ring-white/70">
-            Signed in as <strong>{currentUser}</strong>
+          <div className="flex w-fit items-center gap-2 rounded-full bg-white p-1.5 pl-4 shadow-lg ring-1 ring-white/70">
+            <span>
+              Signed in as <strong>{currentUser}</strong>
+              {isAdmin ? (
+                <span className="ml-2 rounded-full bg-blue-100 px-2 py-0.5 text-xs font-bold uppercase tracking-wide text-blue-700">
+                  Admin
+                </span>
+              ) : null}
+            </span>
+            <button
+              className="rounded-full bg-slate-900 px-3 py-1.5 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+              onClick={signOut}
+              type="button"
+              disabled={isSigningOut}
+            >
+              {isSigningOut ? "Signing out…" : "Sign out"}
+            </button>
           </div>
         </header>
 
@@ -780,6 +832,7 @@ export default function Home() {
           <ProjectDashboard
             projects={projects}
             currentUserId={currentUserId}
+            isAdmin={isAdmin}
             isLoading={isLoadingProjects}
             showProjectForm={showProjectForm}
             projectName={projectName}
@@ -806,6 +859,7 @@ export default function Home() {
             primaryPackage={primaryPackage}
             primaryHistory={primaryHistory}
             currentUserId={currentUserId}
+            isAdmin={isAdmin}
             ownedActiveBranches={ownedActiveBranches}
             selectedBranchId={selectedBranchId}
             branchName={branchName}
@@ -844,6 +898,7 @@ export default function Home() {
 type ProjectDashboardProps = {
   projects: ProjectSummary[];
   currentUserId: string;
+  isAdmin: boolean;
   isLoading: boolean;
   showProjectForm: boolean;
   projectName: string;
@@ -862,6 +917,7 @@ type ProjectDashboardProps = {
 function ProjectDashboard({
   projects,
   currentUserId,
+  isAdmin,
   isLoading,
   showProjectForm,
   projectName,
@@ -984,7 +1040,7 @@ function ProjectDashboard({
                 </span>
                 <span
                   className={`text-xl text-slate-400 transition group-hover:translate-x-1 group-hover:text-blue-600 ${
-                    project.created_by === currentUserId ? "mr-10" : ""
+                    project.created_by === currentUserId || isAdmin ? "mr-10" : ""
                   }`}
                 >
                   →
@@ -1006,7 +1062,7 @@ function ProjectDashboard({
               </span>
             </button>
 
-            {project.created_by === currentUserId ? (
+            {project.created_by === currentUserId || isAdmin ? (
               <details className="absolute right-5 top-5 z-10">
                 <summary
                   aria-label={`More options for ${project.name}`}
@@ -1048,6 +1104,7 @@ type ProjectWorkspaceProps = {
   primaryPackage: CadPackage | null;
   primaryHistory: CadPackage[];
   currentUserId: string;
+  isAdmin: boolean;
   ownedActiveBranches: BranchRecord[];
   selectedBranchId: string;
   branchName: string;
@@ -1081,6 +1138,7 @@ function ProjectWorkspace({
   primaryPackage,
   primaryHistory,
   currentUserId,
+  isAdmin,
   ownedActiveBranches,
   selectedBranchId,
   branchName,
@@ -1110,11 +1168,12 @@ function ProjectWorkspace({
     <>
       <section className="mt-8 rounded-2xl border border-white/15 bg-[linear-gradient(135deg,_#0d3157_0%,_#061a33_100%)] px-6 py-7 text-white shadow-2xl sm:px-8">
         <button
-          className="text-sm font-semibold text-blue-300 hover:text-white"
+          className="inline-flex items-center gap-2 rounded-lg border border-white/25 bg-white/10 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:border-white/50 hover:bg-white/20"
           onClick={onBack}
           type="button"
         >
-          ← All project paths
+          <span aria-hidden="true">←</span>
+          Home
         </button>
         <div className="mt-5 flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
           <div>
@@ -1205,6 +1264,7 @@ function ProjectWorkspace({
               packages={packages}
               primaryHistory={primaryHistory}
               currentUserId={currentUserId}
+              isAdmin={isAdmin}
               mergingBranchId={mergingBranchId}
               deletingBranchId={deletingBranchId}
               onSelectBranchForUpload={onSelectBranchForUpload}
@@ -1325,6 +1385,7 @@ type VersionTreeGraphProps = {
   packages: CadPackage[];
   primaryHistory: CadPackage[];
   currentUserId: string;
+  isAdmin: boolean;
   mergingBranchId: DatabaseId | null;
   deletingBranchId: DatabaseId | null;
   onSelectBranchForUpload: (branch: BranchRecord) => void;
@@ -1337,6 +1398,7 @@ function VersionTreeGraph({
   packages,
   primaryHistory,
   currentUserId,
+  isAdmin,
   mergingBranchId,
   deletingBranchId,
   onSelectBranchForUpload,
@@ -1593,6 +1655,7 @@ function VersionTreeGraph({
 
         {branchLayouts.map((layout) => {
           const ownsBranch = layout.branch.owner_id === currentUserId;
+          const canDeleteBranch = ownsBranch || isAdmin;
           const canMerge =
             ownsBranch && !layout.branch.merged_at && layout.versions.length > 0;
           const labelLeft = layout.baseCenterX + 28;
@@ -1616,7 +1679,7 @@ function VersionTreeGraph({
                   <p className="truncate text-sm font-bold" title={layout.branch.name}>
                     {layout.branch.name}
                   </p>
-                  {ownsBranch ? (
+                  {canDeleteBranch ? (
                     <details className="relative shrink-0">
                       <summary
                         aria-label={`More options for ${layout.branch.name}`}
