@@ -94,6 +94,16 @@ function pluralize(count: number, singular: string) {
   return `${count} ${singular}${count === 1 ? "" : "s"}`;
 }
 
+async function removeStorageFiles(paths: string[]) {
+  for (let index = 0; index < paths.length; index += 100) {
+    const { error } = await supabase.storage
+      .from(STORAGE_BUCKET)
+      .remove(paths.slice(index, index + 100));
+
+    if (error) throw error;
+  }
+}
+
 export default function Home() {
   const [name, setName] = useState("");
   const [currentUser, setCurrentUser] = useState("");
@@ -118,6 +128,8 @@ export default function Home() {
   const [isCreatingBranch, setIsCreatingBranch] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [mergingBranchId, setMergingBranchId] = useState<DatabaseId | null>(null);
+  const [deletingProjectId, setDeletingProjectId] = useState<DatabaseId | null>(null);
+  const [deletingBranchId, setDeletingBranchId] = useState<DatabaseId | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
   const [statusMessage, setStatusMessage] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -575,6 +587,90 @@ export default function Home() {
     }
   }
 
+  async function deleteProject(project: ProjectSummary) {
+    const confirmed = window.confirm(
+      `Delete “${project.name}”? This permanently removes its branches, package records, and uploaded CAD files.`,
+    );
+    if (!confirmed) return;
+
+    setDeletingProjectId(project.id);
+    setErrorMessage("");
+    setStatusMessage(`Deleting ${project.name}…`);
+
+    try {
+      const { data: projectPackages, error: packageError } = await supabase
+        .from("cad_packages")
+        .select("storage_path")
+        .eq("project_id", project.id);
+      if (packageError) throw packageError;
+
+      await removeStorageFiles(
+        (projectPackages ?? []).map((cadPackage) => cadPackage.storage_path),
+      );
+
+      const { error: deleteError } = await supabase
+        .from("cad_projects")
+        .delete()
+        .eq("id", project.id)
+        .select("id")
+        .single();
+      if (deleteError) throw deleteError;
+
+      await loadProjects();
+      setStatusMessage(`${project.name} was deleted.`);
+    } catch (error) {
+      setStatusMessage("");
+      setErrorMessage(`Could not delete this project path. ${getErrorMessage(error)}`);
+    } finally {
+      setDeletingProjectId(null);
+    }
+  }
+
+  async function deleteBranch(branch: BranchRecord) {
+    if (!selectedProject) return;
+
+    const branchPackages = packages.filter(
+      (cadPackage) => String(cadPackage.branch_id) === String(branch.id),
+    );
+    const primaryWarning = branchPackages.some((cadPackage) => cadPackage.is_primary)
+      ? " This branch contains the current primary version, so the project will have no primary until another branch is added to it."
+      : "";
+    const confirmed = window.confirm(
+      `Delete “${branch.name}”? This permanently removes the branch and all ${pluralize(branchPackages.length, "uploaded version")}.${primaryWarning}`,
+    );
+    if (!confirmed) return;
+
+    setDeletingBranchId(branch.id);
+    setErrorMessage("");
+    setStatusMessage(`Deleting ${branch.name}…`);
+
+    try {
+      await removeStorageFiles(
+        branchPackages.map((cadPackage) => cadPackage.storage_path),
+      );
+
+      const { error: deleteError } = await supabase
+        .from("cad_branches")
+        .delete()
+        .eq("id", branch.id)
+        .select("id")
+        .single();
+      if (deleteError) throw deleteError;
+
+      if (selectedBranchId === String(branch.id)) setSelectedBranchId("");
+      const [workspaceLoaded] = await Promise.all([
+        loadWorkspace(selectedProject),
+        loadProjects(),
+      ]);
+      setStatusMessage(workspaceLoaded ? `${branch.name} was deleted.` : "");
+    } catch (error) {
+      setStatusMessage("");
+      setErrorMessage(`Could not delete this branch. ${getErrorMessage(error)}`);
+    } finally {
+      setDeletingBranchId(null);
+    }
+  }
+
   function returnToProjects() {
     setSelectedProject(null);
     setBranches([]);
@@ -683,12 +779,15 @@ export default function Home() {
         {!selectedProject ? (
           <ProjectDashboard
             projects={projects}
+            currentUserId={currentUserId}
             isLoading={isLoadingProjects}
             showProjectForm={showProjectForm}
             projectName={projectName}
             projectDescription={projectDescription}
             isCreatingProject={isCreatingProject}
+            deletingProjectId={deletingProjectId}
             onOpenProject={openProject}
+            onDeleteProject={deleteProject}
             onShowProjectForm={() => {
               setShowProjectForm(true);
               setErrorMessage("");
@@ -716,6 +815,7 @@ export default function Home() {
             isCreatingBranch={isCreatingBranch}
             isUploading={isUploading}
             mergingBranchId={mergingBranchId}
+            deletingBranchId={deletingBranchId}
             fileInputRef={fileInputRef}
             uploadPanelRef={uploadPanelRef}
             onBack={returnToProjects}
@@ -733,6 +833,7 @@ export default function Home() {
             onVersionDescriptionChange={setVersionDescription}
             onUploadVersion={uploadVersion}
             onMergeBranch={mergeBranch}
+            onDeleteBranch={deleteBranch}
           />
         )}
       </div>
@@ -742,12 +843,15 @@ export default function Home() {
 
 type ProjectDashboardProps = {
   projects: ProjectSummary[];
+  currentUserId: string;
   isLoading: boolean;
   showProjectForm: boolean;
   projectName: string;
   projectDescription: string;
   isCreatingProject: boolean;
+  deletingProjectId: DatabaseId | null;
   onOpenProject: (project: ProjectSummary) => void;
+  onDeleteProject: (project: ProjectSummary) => void;
   onShowProjectForm: () => void;
   onCancelProject: () => void;
   onProjectNameChange: (value: string) => void;
@@ -757,12 +861,15 @@ type ProjectDashboardProps = {
 
 function ProjectDashboard({
   projects,
+  currentUserId,
   isLoading,
   showProjectForm,
   projectName,
   projectDescription,
   isCreatingProject,
+  deletingProjectId,
   onOpenProject,
+  onDeleteProject,
   onShowProjectForm,
   onCancelProject,
   onProjectNameChange,
@@ -862,35 +969,66 @@ function ProjectDashboard({
         ) : null}
 
         {projects.map((project) => (
-          <button
-            className="group min-h-64 rounded-2xl border border-slate-200 bg-white p-7 text-left shadow-sm transition hover:-translate-y-1 hover:border-blue-300 hover:shadow-lg"
+          <article
+            className="group relative min-h-64 rounded-2xl border border-slate-200 bg-white shadow-sm transition hover:-translate-y-1 hover:border-blue-300 hover:shadow-lg"
             key={project.id}
-            onClick={() => onOpenProject(project)}
-            type="button"
           >
-            <span className="flex items-start justify-between gap-3">
-              <span className="rounded-lg bg-slate-900 px-3 py-1 text-xs font-bold uppercase tracking-wider text-white">
-                CAD project
+            <button
+              className="block min-h-64 w-full p-7 text-left"
+              onClick={() => onOpenProject(project)}
+              type="button"
+            >
+              <span className="flex items-start justify-between gap-3">
+                <span className="rounded-lg bg-slate-900 px-3 py-1 text-xs font-bold uppercase tracking-wider text-white">
+                  CAD project
+                </span>
+                <span
+                  className={`text-xl text-slate-400 transition group-hover:translate-x-1 group-hover:text-blue-600 ${
+                    project.created_by === currentUserId ? "mr-10" : ""
+                  }`}
+                >
+                  →
+                </span>
               </span>
-              <span className="text-xl text-slate-400 transition group-hover:translate-x-1 group-hover:text-blue-600">
-                →
+              <span className="mt-7 block text-2xl font-bold">{project.name}</span>
+              <span className="mt-2 line-clamp-2 block min-h-10 text-sm leading-5 text-slate-600">
+                {project.description || "No project description yet."}
               </span>
-            </span>
-            <span className="mt-7 block text-2xl font-bold">{project.name}</span>
-            <span className="mt-2 line-clamp-2 block min-h-10 text-sm leading-5 text-slate-600">
-              {project.description || "No project description yet."}
-            </span>
-            <span className="mt-6 block border-t border-slate-100 pt-4 text-sm text-slate-500">
-              <strong className="font-semibold text-slate-700">
-                {project.primaryFileName ?? "No primary yet"}
-              </strong>
-            </span>
-            <span className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs font-medium text-slate-500">
-              <span>{pluralize(project.activeBranchCount, "active branch")}</span>
-              <span>{pluralize(project.totalVersionCount, "version")}</span>
-              <span>Updated {formatDate(project.updatedAt)}</span>
-            </span>
-          </button>
+              <span className="mt-6 block border-t border-slate-100 pt-4 text-sm text-slate-500">
+                <strong className="font-semibold text-slate-700">
+                  {project.primaryFileName ?? "No primary yet"}
+                </strong>
+              </span>
+              <span className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs font-medium text-slate-500">
+                <span>{pluralize(project.activeBranchCount, "active branch")}</span>
+                <span>{pluralize(project.totalVersionCount, "version")}</span>
+                <span>Updated {formatDate(project.updatedAt)}</span>
+              </span>
+            </button>
+
+            {project.created_by === currentUserId ? (
+              <details className="absolute right-5 top-5 z-10">
+                <summary
+                  aria-label={`More options for ${project.name}`}
+                  className="flex h-9 w-9 cursor-pointer list-none items-center justify-center rounded-full border border-slate-200 bg-white text-xl font-bold tracking-widest text-slate-500 shadow-sm hover:bg-slate-100 hover:text-slate-900 [&::-webkit-details-marker]:hidden"
+                >
+                  ⋯
+                </summary>
+                <div className="absolute right-0 mt-2 w-44 rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl">
+                  <button
+                    className="w-full rounded-lg px-3 py-2 text-left text-sm font-semibold text-red-600 hover:bg-red-50 disabled:opacity-60"
+                    onClick={() => onDeleteProject(project)}
+                    type="button"
+                    disabled={deletingProjectId !== null}
+                  >
+                    {String(deletingProjectId) === String(project.id)
+                      ? "Deleting…"
+                      : "Delete project"}
+                  </button>
+                </div>
+              </details>
+            ) : null}
+          </article>
         ))}
       </div>
 
@@ -919,6 +1057,7 @@ type ProjectWorkspaceProps = {
   isCreatingBranch: boolean;
   isUploading: boolean;
   mergingBranchId: DatabaseId | null;
+  deletingBranchId: DatabaseId | null;
   fileInputRef: React.RefObject<HTMLInputElement | null>;
   uploadPanelRef: React.RefObject<HTMLElement | null>;
   onBack: () => void;
@@ -932,6 +1071,7 @@ type ProjectWorkspaceProps = {
   onVersionDescriptionChange: (value: string) => void;
   onUploadVersion: () => void;
   onMergeBranch: (branch: BranchRecord) => void;
+  onDeleteBranch: (branch: BranchRecord) => void;
 };
 
 function ProjectWorkspace({
@@ -950,6 +1090,7 @@ function ProjectWorkspace({
   isCreatingBranch,
   isUploading,
   mergingBranchId,
+  deletingBranchId,
   fileInputRef,
   uploadPanelRef,
   onBack,
@@ -963,6 +1104,7 @@ function ProjectWorkspace({
   onVersionDescriptionChange,
   onUploadVersion,
   onMergeBranch,
+  onDeleteBranch,
 }: ProjectWorkspaceProps) {
   return (
     <>
@@ -1064,8 +1206,10 @@ function ProjectWorkspace({
               primaryHistory={primaryHistory}
               currentUserId={currentUserId}
               mergingBranchId={mergingBranchId}
+              deletingBranchId={deletingBranchId}
               onSelectBranchForUpload={onSelectBranchForUpload}
               onMergeBranch={onMergeBranch}
+              onDeleteBranch={onDeleteBranch}
             />
           )}
         </div>
@@ -1182,8 +1326,10 @@ type VersionTreeGraphProps = {
   primaryHistory: CadPackage[];
   currentUserId: string;
   mergingBranchId: DatabaseId | null;
+  deletingBranchId: DatabaseId | null;
   onSelectBranchForUpload: (branch: BranchRecord) => void;
   onMergeBranch: (branch: BranchRecord) => void;
+  onDeleteBranch: (branch: BranchRecord) => void;
 };
 
 function VersionTreeGraph({
@@ -1192,8 +1338,10 @@ function VersionTreeGraph({
   primaryHistory,
   currentUserId,
   mergingBranchId,
+  deletingBranchId,
   onSelectBranchForUpload,
   onMergeBranch,
+  onDeleteBranch,
 }: VersionTreeGraphProps) {
   const rootCenterX = GRAPH_ROOT_LEFT + GRAPH_ROOT_WIDTH / 2;
   const primaryLeftById = new Map<string, number>();
@@ -1464,9 +1612,33 @@ function VersionTreeGraph({
                 >
                   {layout.branch.merged_at ? "Merged branch" : "Working branch"}
                 </p>
-                <p className="mt-1 truncate text-sm font-bold" title={layout.branch.name}>
-                  {layout.branch.name}
-                </p>
+                <div className="mt-1 flex items-center justify-between gap-2">
+                  <p className="truncate text-sm font-bold" title={layout.branch.name}>
+                    {layout.branch.name}
+                  </p>
+                  {ownsBranch ? (
+                    <details className="relative shrink-0">
+                      <summary
+                        aria-label={`More options for ${layout.branch.name}`}
+                        className="flex h-7 w-7 cursor-pointer list-none items-center justify-center rounded-full text-base font-bold tracking-widest text-slate-500 hover:bg-slate-100 hover:text-slate-900 [&::-webkit-details-marker]:hidden"
+                      >
+                        ⋯
+                      </summary>
+                      <div className="absolute right-0 z-20 mt-1 w-40 rounded-lg border border-slate-200 bg-white p-1 shadow-xl">
+                        <button
+                          className="w-full rounded-md px-2.5 py-2 text-left text-[11px] font-bold text-red-600 hover:bg-red-50 disabled:opacity-60"
+                          onClick={() => onDeleteBranch(layout.branch)}
+                          type="button"
+                          disabled={deletingBranchId !== null}
+                        >
+                          {String(deletingBranchId) === String(layout.branch.id)
+                            ? "Deleting…"
+                            : "Delete branch"}
+                        </button>
+                      </div>
+                    </details>
+                  ) : null}
+                </div>
                 <p className="mt-1 truncate text-[11px] text-slate-500">
                   {layout.branch.owner_name}
                 </p>
