@@ -15,6 +15,9 @@ const supabase = createClient();
 const STORAGE_BUCKET = "cad-packages";
 const SIGNED_URL_LIFETIME_SECONDS = 60 * 60;
 const ALLOWED_EXTENSIONS = new Set(["zip", "prt", "asm", "step", "stp"]);
+const SUPABASE_FREE_STORAGE_BYTES = 1024 * 1024 * 1024;
+const STORAGE_WARNING_BYTES = SUPABASE_FREE_STORAGE_BYTES * 0.8;
+const ARCHIVE_MAX_BYTES = 250 * 1024 * 1024;
 
 type DatabaseId = number | string;
 
@@ -22,6 +25,7 @@ type ProjectRecord = {
   id: DatabaseId;
   name: string;
   description: string | null;
+  cad_software: string | null;
   created_by: string;
   created_by_name: string;
   created_at: string;
@@ -38,6 +42,7 @@ type BranchRecord = {
   id: DatabaseId;
   project_id: DatabaseId;
   name: string;
+  cad_software: string | null;
   owner_id: string;
   owner_name: string;
   base_package_id: DatabaseId | null;
@@ -57,6 +62,10 @@ type PackageRecord = {
   is_primary: boolean;
   version_number: number;
   promoted_at: string | null;
+  file_size: number | null;
+  is_archived: boolean;
+  archived_at: string | null;
+  archive_name: string | null;
   created_at: string;
 };
 
@@ -94,6 +103,17 @@ function pluralize(count: number, singular: string) {
   return `${count} ${singular}${count === 1 ? "" : "s"}`;
 }
 
+function formatFileSize(bytes: number) {
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${bytes} bytes`;
+}
+
+function safeArchiveName(value: string) {
+  return value.trim().replace(/[^a-zA-Z0-9._-]/g, "_") || "unnamed";
+}
+
 async function removeStorageFiles(paths: string[]) {
   for (let index = 0; index < paths.length; index += 100) {
     const { error } = await supabase.storage
@@ -112,11 +132,15 @@ export default function Home() {
   const [selectedProject, setSelectedProject] = useState<ProjectSummary | null>(null);
   const [branches, setBranches] = useState<BranchRecord[]>([]);
   const [packages, setPackages] = useState<CadPackage[]>([]);
+  const [storedFileBytes, setStoredFileBytes] = useState(0);
   const [showProjectForm, setShowProjectForm] = useState(false);
+  const [showExampleGuide, setShowExampleGuide] = useState(false);
   const [showBranchForm, setShowBranchForm] = useState(false);
   const [projectName, setProjectName] = useState("");
   const [projectDescription, setProjectDescription] = useState("");
+  const [projectSoftware, setProjectSoftware] = useState("");
   const [branchName, setBranchName] = useState("");
+  const [branchSoftware, setBranchSoftware] = useState("");
   const [selectedBranchId, setSelectedBranchId] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [versionDescription, setVersionDescription] = useState("");
@@ -128,9 +152,12 @@ export default function Home() {
   const [isCreatingBranch, setIsCreatingBranch] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
+  const [isExportingArchive, setIsExportingArchive] = useState(false);
   const [mergingBranchId, setMergingBranchId] = useState<DatabaseId | null>(null);
   const [deletingProjectId, setDeletingProjectId] = useState<DatabaseId | null>(null);
   const [deletingBranchId, setDeletingBranchId] = useState<DatabaseId | null>(null);
+  const [renamingProjectId, setRenamingProjectId] = useState<DatabaseId | null>(null);
+  const [renamingBranchId, setRenamingBranchId] = useState<DatabaseId | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
   const [statusMessage, setStatusMessage] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -144,12 +171,14 @@ export default function Home() {
       const [projectResult, branchResult, packageResult] = await Promise.all([
         supabase
           .from("cad_projects")
-          .select("id, name, description, created_by, created_by_name, created_at")
+          .select(
+            "id, name, description, cad_software, created_by, created_by_name, created_at",
+          )
           .order("created_at", { ascending: false }),
         supabase.from("cad_branches").select("project_id, merged_at"),
         supabase
           .from("cad_packages")
-          .select("project_id, file_name, is_primary, created_at")
+          .select("project_id, file_name, is_primary, file_size, is_archived, created_at")
           .order("created_at", { ascending: false }),
       ]);
 
@@ -164,8 +193,21 @@ export default function Home() {
       >[];
       const packageRows = (packageResult.data ?? []) as Pick<
         PackageRecord,
-        "project_id" | "file_name" | "is_primary" | "created_at"
+        | "project_id"
+        | "file_name"
+        | "is_primary"
+        | "file_size"
+        | "is_archived"
+        | "created_at"
       >[];
+
+      setStoredFileBytes(
+        packageRows.reduce(
+          (total, cadPackage) =>
+            total + (cadPackage.is_archived ? 0 : Number(cadPackage.file_size ?? 0)),
+          0,
+        ),
+      );
 
       const summaries = projectRows.map((project) => {
         const projectBranches = branchRows.filter(
@@ -208,14 +250,14 @@ export default function Home() {
         supabase
           .from("cad_branches")
           .select(
-            "id, project_id, name, owner_id, owner_name, base_package_id, branched_from_file_name, merged_at, created_at",
+            "id, project_id, name, cad_software, owner_id, owner_name, base_package_id, branched_from_file_name, merged_at, created_at",
           )
           .eq("project_id", project.id)
           .order("created_at", { ascending: true }),
         supabase
           .from("cad_packages")
           .select(
-            "id, project_id, branch_id, file_name, storage_path, owner_name, description, is_primary, version_number, promoted_at, created_at",
+            "id, project_id, branch_id, file_name, storage_path, owner_name, description, is_primary, version_number, promoted_at, file_size, is_archived, archived_at, archive_name, created_at",
           )
           .eq("project_id", project.id)
           .order("created_at", { ascending: true }),
@@ -227,6 +269,10 @@ export default function Home() {
       const packageRows = (packageResult.data ?? []) as PackageRecord[];
       const packagesWithUrls = await Promise.all(
         packageRows.map(async (cadPackage) => {
+          if (cadPackage.is_archived) {
+            return { ...cadPackage, downloadUrl: "" };
+          }
+
           const { data, error } = await supabase.storage
             .from(STORAGE_BUCKET)
             .createSignedUrl(cadPackage.storage_path, SIGNED_URL_LIFETIME_SECONDS);
@@ -359,9 +405,15 @@ export default function Home() {
   async function createProject(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const trimmedName = projectName.trim();
+    const trimmedSoftware = projectSoftware.trim();
 
     if (!trimmedName) {
       setErrorMessage("Give the new project path a name.");
+      return;
+    }
+
+    if (!trimmedSoftware) {
+      setErrorMessage("Enter the CAD software used for this project path.");
       return;
     }
 
@@ -375,10 +427,13 @@ export default function Home() {
         .insert({
           name: trimmedName,
           description: projectDescription.trim() || null,
+          cad_software: trimmedSoftware,
           created_by: currentUserId,
           created_by_name: currentUser,
         })
-        .select("id, name, description, created_by, created_by_name, created_at")
+        .select(
+          "id, name, description, cad_software, created_by, created_by_name, created_at",
+        )
         .single();
 
       if (error) throw error;
@@ -393,11 +448,13 @@ export default function Home() {
 
       setProjectName("");
       setProjectDescription("");
+      setProjectSoftware("");
       setShowProjectForm(false);
       setSelectedProject(newProject);
       setBranches([]);
       setPackages([]);
       setBranchName(`${currentUser}'s branch`);
+      setBranchSoftware(trimmedSoftware);
       setShowBranchForm(true);
       setStatusMessage(`${newProject.name} is ready. Create its first working branch.`);
       await loadProjects();
@@ -414,6 +471,7 @@ export default function Home() {
     setErrorMessage("");
     setShowBranchForm(false);
     setBranchName(`${currentUser}'s branch`);
+    setBranchSoftware(project.cad_software ?? "");
     setSelectedBranchId("");
     await loadWorkspace(project);
   }
@@ -423,8 +481,15 @@ export default function Home() {
     if (!selectedProject) return;
 
     const trimmedName = branchName.trim();
+    const trimmedSoftware = branchSoftware.trim();
     if (!trimmedName) {
       setErrorMessage("Give your branch a name.");
+      return;
+    }
+
+
+    if (!trimmedSoftware) {
+      setErrorMessage("Enter the CAD software used for this branch.");
       return;
     }
 
@@ -438,13 +503,14 @@ export default function Home() {
         .insert({
           project_id: selectedProject.id,
           name: trimmedName,
+          cad_software: trimmedSoftware,
           owner_id: currentUserId,
           owner_name: currentUser,
           base_package_id: primaryPackage?.id ?? null,
           branched_from_file_name: primaryPackage?.file_name ?? null,
         })
         .select(
-          "id, project_id, name, owner_id, owner_name, base_package_id, branched_from_file_name, merged_at, created_at",
+          "id, project_id, name, cad_software, owner_id, owner_name, base_package_id, branched_from_file_name, merged_at, created_at",
         )
         .single();
 
@@ -453,6 +519,7 @@ export default function Home() {
       const newBranch = data as BranchRecord;
       setShowBranchForm(false);
       setBranchName(`${currentUser}'s branch`);
+      setBranchSoftware(selectedProject.cad_software ?? "");
       setSelectedBranchId(String(newBranch.id));
       setStatusMessage(`${newBranch.name} created. Upload its first CAD version.`);
       await Promise.all([loadWorkspace(selectedProject), loadProjects()]);
@@ -536,6 +603,8 @@ export default function Home() {
         description: versionDescription.trim() || "No description provided",
         is_primary: false,
         promoted_at: null,
+        file_size: selectedFile.size,
+        is_archived: false,
       });
 
       if (insertError) {
@@ -559,6 +628,175 @@ export default function Home() {
       setErrorMessage(`Could not upload this version. ${getErrorMessage(error)}`);
     } finally {
       setIsUploading(false);
+    }
+  }
+
+  async function exportOldestFiles() {
+    const confirmed = window.confirm(
+      "Export up to 250 MB of the earliest eligible CAD files? After the ZIP is prepared and its download starts, those file copies will be removed from Supabase while their workflow history remains.",
+    );
+    if (!confirmed) return;
+
+    setIsExportingArchive(true);
+    setErrorMessage("");
+    setStatusMessage("Finding the earliest files that are safe to archive…");
+    let archiveDownloaded = false;
+
+    try {
+      const [packageResult, branchResult] = await Promise.all([
+        supabase
+          .from("cad_packages")
+          .select(
+            "id, project_id, branch_id, file_name, storage_path, owner_name, description, is_primary, version_number, promoted_at, file_size, is_archived, archived_at, archive_name, created_at",
+          )
+          .eq("is_archived", false)
+          .order("created_at", { ascending: true }),
+        supabase
+          .from("cad_branches")
+          .select("id, project_id, name, merged_at"),
+      ]);
+      if (packageResult.error) throw packageResult.error;
+      if (branchResult.error) throw branchResult.error;
+
+      const packageRows = (packageResult.data ?? []) as PackageRecord[];
+      const branchRows = (branchResult.data ?? []) as Pick<
+        BranchRecord,
+        "id" | "project_id" | "name" | "merged_at"
+      >[];
+      const latestActivePackageIds = new Set<string>();
+
+      for (const branch of branchRows.filter((candidate) => !candidate.merged_at)) {
+        const latest = packageRows
+          .filter((cadPackage) => String(cadPackage.branch_id) === String(branch.id))
+          .sort((first, second) => second.version_number - first.version_number)[0];
+        if (latest) latestActivePackageIds.add(String(latest.id));
+      }
+
+      const selectedPackages: PackageRecord[] = [];
+      let selectedBytes = 0;
+      for (const cadPackage of packageRows) {
+        const size = Number(cadPackage.file_size ?? 0);
+        const isProtected =
+          cadPackage.is_primary || latestActivePackageIds.has(String(cadPackage.id));
+        if (isProtected || size <= 0 || size > ARCHIVE_MAX_BYTES) continue;
+        if (selectedBytes + size > ARCHIVE_MAX_BYTES) continue;
+        selectedPackages.push(cadPackage);
+        selectedBytes += size;
+      }
+
+      if (selectedPackages.length === 0) {
+        throw new Error(
+          "No eligible files were found. Current primary files and the newest version on each active branch are protected.",
+        );
+      }
+
+      const archiveStamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const archiveName = `cad-handoff-archive-${archiveStamp}.zip`;
+      const projectNames = new Map(
+        projects.map((project) => [String(project.id), project.name]),
+      );
+      const branchNames = new Map(
+        branchRows.map((branch) => [String(branch.id), branch.name]),
+      );
+      const manifest = {
+        archive: archiveName,
+        exported_at: new Date().toISOString(),
+        total_files: selectedPackages.length,
+        total_original_bytes: selectedBytes,
+        files: selectedPackages.map((cadPackage) => ({
+          package_id: cadPackage.id,
+          project_id: cadPackage.project_id,
+          project_name: projectNames.get(String(cadPackage.project_id)) ?? "Unknown project",
+          branch_id: cadPackage.branch_id,
+          branch_name: branchNames.get(String(cadPackage.branch_id)) ?? "Unknown branch",
+          version_number: cadPackage.version_number,
+          file_name: cadPackage.file_name,
+          owner_name: cadPackage.owner_name,
+          description: cadPackage.description,
+          created_at: cadPackage.created_at,
+          file_size: cadPackage.file_size,
+        })),
+      };
+      const { downloadZip } = await import("client-zip");
+
+      async function* archiveEntries() {
+        yield {
+          name: "manifest.json",
+          input: JSON.stringify(manifest, null, 2),
+          lastModified: new Date(),
+        };
+
+        for (const [index, cadPackage] of selectedPackages.entries()) {
+          setStatusMessage(
+            `Preparing archive file ${index + 1} of ${selectedPackages.length}…`,
+          );
+          const { data, error } = await supabase.storage
+            .from(STORAGE_BUCKET)
+            .createSignedUrl(cadPackage.storage_path, SIGNED_URL_LIFETIME_SECONDS);
+          if (error) throw error;
+
+          const response = await fetch(data.signedUrl);
+          if (!response.ok) {
+            throw new Error(`Could not download ${cadPackage.file_name} for the archive.`);
+          }
+
+          const projectFolder = safeArchiveName(
+            projectNames.get(String(cadPackage.project_id)) ?? `project-${cadPackage.project_id}`,
+          );
+          const branchFolder = safeArchiveName(
+            branchNames.get(String(cadPackage.branch_id)) ?? `branch-${cadPackage.branch_id}`,
+          );
+          yield {
+            name: `files/${projectFolder}/${branchFolder}/v${cadPackage.version_number}-${safeArchiveName(cadPackage.file_name)}`,
+            input: response,
+            size: Number(cadPackage.file_size ?? 0),
+            lastModified: new Date(cadPackage.created_at),
+          };
+        }
+      }
+
+      const archiveBlob = await downloadZip(archiveEntries()).blob();
+      const archiveUrl = URL.createObjectURL(archiveBlob);
+      const link = document.createElement("a");
+      link.href = archiveUrl;
+      link.download = archiveName;
+      link.click();
+      link.remove();
+      archiveDownloaded = true;
+      window.setTimeout(() => URL.revokeObjectURL(archiveUrl), 60_000);
+
+      setStatusMessage("Archive ready. Removing the exported copies from Supabase…");
+      const { error: archiveError } = await supabase.rpc("archive_cad_packages", {
+        p_package_ids: selectedPackages.map((cadPackage) => String(cadPackage.id)),
+        p_archive_name: archiveName,
+      });
+      if (archiveError) throw archiveError;
+
+      await removeStorageFiles(
+        selectedPackages.map((cadPackage) => cadPackage.storage_path),
+      );
+      await Promise.all([
+        loadProjects(),
+        selectedProject ? loadWorkspace(selectedProject) : Promise.resolve(true),
+      ]);
+      setStatusMessage(
+        `${archiveName} downloaded. ${pluralize(selectedPackages.length, "file")} (${formatFileSize(selectedBytes)}) is now marked archived offline.`,
+      );
+    } catch (error) {
+      setStatusMessage("");
+      if (archiveDownloaded) {
+        await Promise.all([
+          loadProjects(),
+          selectedProject ? loadWorkspace(selectedProject) : Promise.resolve(true),
+        ]);
+      }
+      setErrorMessage(
+        archiveDownloaded
+          ? `The ZIP download started, but Supabase cleanup did not finish. ${getErrorMessage(error)}`
+          : `Could not export the archive. ${getErrorMessage(error)}`,
+      );
+    } finally {
+      setIsExportingArchive(false);
     }
   }
 
@@ -587,6 +825,75 @@ export default function Home() {
       setErrorMessage(`Could not merge this branch. ${getErrorMessage(error)}`);
     } finally {
       setMergingBranchId(null);
+    }
+  }
+
+  async function renameProject(project: ProjectSummary) {
+    const nextName = window.prompt("Rename this project path:", project.name)?.trim();
+    if (!nextName || nextName === project.name) return;
+    if (nextName.length > 80) {
+      setErrorMessage("Project names must be 80 characters or fewer.");
+      return;
+    }
+
+    setRenamingProjectId(project.id);
+    setErrorMessage("");
+    setStatusMessage(`Renaming ${project.name}…`);
+
+    try {
+      const { error } = await supabase
+        .from("cad_projects")
+        .update({ name: nextName })
+        .eq("id", project.id)
+        .select("id")
+        .single();
+      if (error) throw error;
+
+      setSelectedProject((current) =>
+        current && String(current.id) === String(project.id)
+          ? { ...current, name: nextName }
+          : current,
+      );
+      await loadProjects();
+      setStatusMessage(`${project.name} was renamed to ${nextName}.`);
+    } catch (error) {
+      setStatusMessage("");
+      setErrorMessage(`Could not rename this project path. ${getErrorMessage(error)}`);
+    } finally {
+      setRenamingProjectId(null);
+    }
+  }
+
+  async function renameBranch(branch: BranchRecord) {
+    if (!selectedProject) return;
+
+    const nextName = window.prompt("Rename this branch:", branch.name)?.trim();
+    if (!nextName || nextName === branch.name) return;
+    if (nextName.length > 80) {
+      setErrorMessage("Branch names must be 80 characters or fewer.");
+      return;
+    }
+
+    setRenamingBranchId(branch.id);
+    setErrorMessage("");
+    setStatusMessage(`Renaming ${branch.name}…`);
+
+    try {
+      const { error } = await supabase
+        .from("cad_branches")
+        .update({ name: nextName })
+        .eq("id", branch.id)
+        .select("id")
+        .single();
+      if (error) throw error;
+
+      await loadWorkspace(selectedProject);
+      setStatusMessage(`${branch.name} was renamed to ${nextName}.`);
+    } catch (error) {
+      setStatusMessage("");
+      setErrorMessage(`Could not rename this branch. ${getErrorMessage(error)}`);
+    } finally {
+      setRenamingBranchId(null);
     }
   }
 
@@ -692,14 +999,18 @@ export default function Home() {
       setCurrentUser("");
       setCurrentUserId("");
       setProjects([]);
+      setStoredFileBytes(0);
       setSelectedProject(null);
       setBranches([]);
       setPackages([]);
       setShowProjectForm(false);
+      setShowExampleGuide(false);
       setShowBranchForm(false);
       setSelectedBranchId("");
       setSelectedFile(null);
       setVersionDescription("");
+      setProjectSoftware("");
+      setBranchSoftware("");
       if (fileInputRef.current) fileInputRef.current.value = "";
     } catch (error) {
       setErrorMessage(`Could not sign out. ${getErrorMessage(error)}`);
@@ -715,6 +1026,7 @@ export default function Home() {
     setErrorMessage("");
     setStatusMessage("");
     setShowBranchForm(false);
+    setShowExampleGuide(false);
     setSelectedBranchId("");
     void loadProjects();
   }
@@ -834,25 +1146,40 @@ export default function Home() {
             currentUserId={currentUserId}
             isAdmin={isAdmin}
             isLoading={isLoadingProjects}
+            storedFileBytes={storedFileBytes}
+            isExportingArchive={isExportingArchive}
             showProjectForm={showProjectForm}
+            showExampleGuide={showExampleGuide}
             projectName={projectName}
             projectDescription={projectDescription}
+            projectSoftware={projectSoftware}
             isCreatingProject={isCreatingProject}
             deletingProjectId={deletingProjectId}
+            renamingProjectId={renamingProjectId}
             onOpenProject={openProject}
+            onRenameProject={renameProject}
             onDeleteProject={deleteProject}
+            onExportOldestFiles={exportOldestFiles}
             onShowProjectForm={() => {
               setShowProjectForm(true);
+              setShowExampleGuide(false);
               setErrorMessage("");
               setStatusMessage("");
             }}
+            onShowExampleGuide={() => {
+              setShowExampleGuide(true);
+              setShowProjectForm(false);
+            }}
+            onCloseExampleGuide={() => setShowExampleGuide(false)}
             onCancelProject={() => setShowProjectForm(false)}
             onProjectNameChange={setProjectName}
             onProjectDescriptionChange={setProjectDescription}
+            onProjectSoftwareChange={setProjectSoftware}
             onCreateProject={createProject}
           />
         ) : (
           <ProjectWorkspace
+            key={selectedProject.id}
             project={selectedProject}
             branches={branches}
             packages={packages}
@@ -863,6 +1190,7 @@ export default function Home() {
             ownedActiveBranches={ownedActiveBranches}
             selectedBranchId={selectedBranchId}
             branchName={branchName}
+            branchSoftware={branchSoftware}
             versionDescription={versionDescription}
             showBranchForm={showBranchForm}
             isLoading={isLoadingWorkspace}
@@ -870,16 +1198,19 @@ export default function Home() {
             isUploading={isUploading}
             mergingBranchId={mergingBranchId}
             deletingBranchId={deletingBranchId}
+            renamingBranchId={renamingBranchId}
             fileInputRef={fileInputRef}
             uploadPanelRef={uploadPanelRef}
             onBack={returnToProjects}
             onShowBranchForm={() => {
               setShowBranchForm(true);
+              setBranchSoftware(selectedProject.cad_software ?? "");
               setErrorMessage("");
               setStatusMessage("");
             }}
             onCancelBranch={() => setShowBranchForm(false)}
             onBranchNameChange={setBranchName}
+            onBranchSoftwareChange={setBranchSoftware}
             onCreateBranch={createBranch}
             onSelectBranch={setSelectedBranchId}
             onSelectBranchForUpload={selectBranchForUpload}
@@ -887,6 +1218,7 @@ export default function Home() {
             onVersionDescriptionChange={setVersionDescription}
             onUploadVersion={uploadVersion}
             onMergeBranch={mergeBranch}
+            onRenameBranch={renameBranch}
             onDeleteBranch={deleteBranch}
           />
         )}
@@ -900,17 +1232,27 @@ type ProjectDashboardProps = {
   currentUserId: string;
   isAdmin: boolean;
   isLoading: boolean;
+  storedFileBytes: number;
+  isExportingArchive: boolean;
   showProjectForm: boolean;
+  showExampleGuide: boolean;
   projectName: string;
   projectDescription: string;
+  projectSoftware: string;
   isCreatingProject: boolean;
   deletingProjectId: DatabaseId | null;
+  renamingProjectId: DatabaseId | null;
   onOpenProject: (project: ProjectSummary) => void;
+  onRenameProject: (project: ProjectSummary) => void;
   onDeleteProject: (project: ProjectSummary) => void;
+  onExportOldestFiles: () => void;
   onShowProjectForm: () => void;
+  onShowExampleGuide: () => void;
+  onCloseExampleGuide: () => void;
   onCancelProject: () => void;
   onProjectNameChange: (value: string) => void;
   onProjectDescriptionChange: (value: string) => void;
+  onProjectSoftwareChange: (value: string) => void;
   onCreateProject: (event: FormEvent<HTMLFormElement>) => void;
 };
 
@@ -919,17 +1261,27 @@ function ProjectDashboard({
   currentUserId,
   isAdmin,
   isLoading,
+  storedFileBytes,
+  isExportingArchive,
   showProjectForm,
+  showExampleGuide,
   projectName,
   projectDescription,
+  projectSoftware,
   isCreatingProject,
   deletingProjectId,
+  renamingProjectId,
   onOpenProject,
+  onRenameProject,
   onDeleteProject,
+  onExportOldestFiles,
   onShowProjectForm,
+  onShowExampleGuide,
+  onCloseExampleGuide,
   onCancelProject,
   onProjectNameChange,
   onProjectDescriptionChange,
+  onProjectSoftwareChange,
   onCreateProject,
 }: ProjectDashboardProps) {
   return (
@@ -949,6 +1301,48 @@ function ProjectDashboard({
             Loading project paths…
           </p>
         ) : null}
+      </div>
+
+      <div
+        className={`mt-7 flex flex-col gap-4 rounded-2xl border p-5 shadow-sm sm:flex-row sm:items-center sm:justify-between ${
+          storedFileBytes >= STORAGE_WARNING_BYTES
+            ? "border-amber-300 bg-amber-50"
+            : "border-white/20 bg-white/10 text-white"
+        }`}
+      >
+        <div>
+          <p
+            className={`text-xs font-bold uppercase tracking-wider ${
+              storedFileBytes >= STORAGE_WARNING_BYTES ? "text-amber-700" : "text-blue-200"
+            }`}
+          >
+            CAD file storage
+          </p>
+          <p className="mt-1 font-bold">
+            {formatFileSize(storedFileBytes)} tracked in Supabase
+          </p>
+          <p
+            className={`mt-1 text-sm ${
+              storedFileBytes >= STORAGE_WARNING_BYTES ? "text-amber-800" : "text-blue-100"
+            }`}
+          >
+            {storedFileBytes >= STORAGE_WARNING_BYTES
+              ? "Storage is nearing the 1 GB free-plan limit. Export older files to free space."
+              : "Export up to 250 MB of the earliest eligible files whenever you need more space."}
+          </p>
+        </div>
+        <button
+          className={`shrink-0 rounded-lg px-4 py-2.5 text-sm font-bold shadow-sm transition disabled:cursor-not-allowed disabled:opacity-60 ${
+            storedFileBytes >= STORAGE_WARNING_BYTES
+              ? "bg-amber-600 text-white hover:bg-amber-700"
+              : "bg-white text-[#082441] hover:bg-blue-50"
+          }`}
+          disabled={isExportingArchive}
+          onClick={onExportOldestFiles}
+          type="button"
+        >
+          {isExportingArchive ? "Building archive…" : "Export oldest files (.zip)"}
+        </button>
       </div>
 
       {showProjectForm ? (
@@ -995,6 +1389,18 @@ function ProjectDashboard({
                 disabled={isCreatingProject}
               />
             </label>
+            <label className="text-sm font-semibold text-slate-700 md:col-span-2">
+              CAD software
+              <input
+                className="mt-2 w-full rounded-lg border border-slate-300 px-4 py-3 font-normal outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                placeholder="Creo, Fusion 360, SolidWorks…"
+                value={projectSoftware}
+                onChange={(event) => onProjectSoftwareChange(event.target.value)}
+                disabled={isCreatingProject}
+                maxLength={80}
+                required
+              />
+            </label>
           </div>
 
           <button
@@ -1005,6 +1411,10 @@ function ProjectDashboard({
             {isCreatingProject ? "Creating Path…" : "Create Project Path"}
           </button>
         </form>
+      ) : null}
+
+      {showExampleGuide ? (
+        <ExamplePathGuide onClose={onCloseExampleGuide} />
       ) : null}
 
       <div className="mt-7 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
@@ -1020,6 +1430,25 @@ function ProjectDashboard({
             <span className="mt-8 block text-xl font-bold text-white">Create New Path</span>
             <span className="mt-2 block text-sm leading-6 text-blue-100">
               Start a separate CAD project with a fresh primary line and working branches.
+            </span>
+          </button>
+        ) : null}
+
+        {!showExampleGuide ? (
+          <button
+            className="group min-h-64 rounded-2xl border border-blue-200 bg-blue-50 p-7 text-left text-slate-900 shadow-sm transition hover:-translate-y-1 hover:border-blue-400 hover:shadow-lg"
+            onClick={onShowExampleGuide}
+            type="button"
+          >
+            <span className="flex h-12 w-12 items-center justify-center rounded-xl bg-blue-600 text-xl font-bold text-white shadow-sm transition group-hover:scale-105">
+              ?
+            </span>
+            <span className="mt-8 block text-xs font-bold uppercase tracking-wider text-blue-600">
+              Example path
+            </span>
+            <span className="mt-2 block text-xl font-bold">How CAD Handoff works</span>
+            <span className="mt-2 block text-sm leading-6 text-slate-600">
+              Walk through the CAD handoff workflow step by step.
             </span>
           </button>
         ) : null}
@@ -1047,6 +1476,9 @@ function ProjectDashboard({
                 </span>
               </span>
               <span className="mt-7 block text-2xl font-bold">{project.name}</span>
+              <span className="mt-2 inline-flex rounded-full bg-blue-50 px-2.5 py-1 text-xs font-bold text-blue-700 ring-1 ring-blue-100">
+                {project.cad_software || "CAD software not specified"}
+              </span>
               <span className="mt-2 line-clamp-2 block min-h-10 text-sm leading-5 text-slate-600">
                 {project.description || "No project description yet."}
               </span>
@@ -1071,6 +1503,16 @@ function ProjectDashboard({
                   ⋯
                 </summary>
                 <div className="absolute right-0 mt-2 w-44 rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl">
+                  <button
+                    className="w-full rounded-lg px-3 py-2 text-left text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                    onClick={() => onRenameProject(project)}
+                    type="button"
+                    disabled={renamingProjectId !== null || deletingProjectId !== null}
+                  >
+                    {String(renamingProjectId) === String(project.id)
+                      ? "Renaming…"
+                      : "Rename project"}
+                  </button>
                   <button
                     className="w-full rounded-lg px-3 py-2 text-left text-sm font-semibold text-red-600 hover:bg-red-50 disabled:opacity-60"
                     onClick={() => onDeleteProject(project)}
@@ -1097,6 +1539,166 @@ function ProjectDashboard({
   );
 }
 
+function ExamplePathGuide({ onClose }: { onClose: () => void }) {
+  const [currentStep, setCurrentStep] = useState(0);
+  const steps = [
+    {
+      title: "Create a project path",
+      text: "Start a workspace for one CAD system. Give it a clear name, description, and CAD software.",
+      targetX: 98,
+    },
+    {
+      title: "Create your working branch",
+      text: "Branch from the latest primary model, then identify the contributor and software used on that branch.",
+      targetX: 392,
+    },
+    {
+      title: "Upload versions",
+      text: "Add ZIP, PRT, ASM, STEP, or STP files. Every upload becomes the next numbered version on that branch.",
+      targetX: 650,
+    },
+    {
+      title: "Review the tree",
+      text: "Use Go to current, Primary only, or Collapse branch to navigate large handoff histories.",
+      targetX: 790,
+    },
+    {
+      title: "Add the agreed version to Primary",
+      text: "The latest branch version reconnects to the blue primary path and becomes the current model.",
+      targetX: 1022,
+    },
+  ];
+  const step = steps[currentStep];
+  const nodeClass = (stepIndex: number, color: string) =>
+    `absolute w-44 rounded-xl border-2 p-4 shadow-sm transition ${color} ${
+      currentStep === stepIndex ? "scale-105 ring-4 ring-blue-400/40" : "opacity-70"
+    }`;
+
+  return (
+    <div
+      aria-labelledby="example-guide-title"
+      aria-modal="true"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 p-4 backdrop-blur-sm"
+      role="dialog"
+    >
+      <section className="max-h-[94vh] w-full max-w-6xl overflow-hidden rounded-2xl bg-white shadow-2xl">
+        <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-6 py-5 sm:px-8">
+          <div>
+            <p className="text-xs font-bold uppercase tracking-[0.18em] text-blue-600">
+              Example path · Step {currentStep + 1} of {steps.length}
+            </p>
+            <h3 className="mt-1 text-2xl font-bold" id="example-guide-title">
+              Walk through the CAD handoff workflow
+            </h3>
+          </div>
+          <button
+            aria-label="Close example walkthrough"
+            className="flex h-9 w-9 items-center justify-center rounded-full border border-slate-300 text-xl text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+            onClick={onClose}
+            type="button"
+          >
+            ×
+          </button>
+        </div>
+
+        <div className="max-h-[calc(94vh-170px)] overflow-auto p-6 sm:p-8">
+          <div className="overflow-x-auto rounded-xl bg-slate-50 p-4 ring-1 ring-slate-200">
+            <div className="relative h-[390px] w-[1140px]">
+              <svg aria-hidden="true" className="absolute inset-0" height="390" width="1140">
+                <path d="M 186 94 H 260" fill="none" stroke="#3b82f6" strokeWidth="4" />
+                <path d="M 436 94 H 946" fill="none" stroke="#3b82f6" strokeWidth="4" />
+                <path d="M 348 140 V 270 H 560" fill="none" stroke="#f59e0b" strokeWidth="4" />
+                <path d="M 736 270 H 776" fill="none" stroke="#f59e0b" strokeWidth="4" />
+                <path d="M 952 270 H 1034 V 140" fill="none" stroke="#10b981" strokeWidth="4" />
+              </svg>
+
+              <div
+                className="absolute top-0 z-20 -translate-x-1/2 text-center text-blue-600 transition-all duration-300"
+                style={{ left: step.targetX }}
+              >
+                <span className="rounded-full bg-blue-600 px-3 py-1 text-xs font-bold text-white shadow-lg">
+                  Step {currentStep + 1}
+                </span>
+                <span className="block text-4xl font-black leading-8">↓</span>
+              </div>
+
+              <div className={nodeClass(0, "border-blue-300 bg-blue-50")} style={{ left: 10, top: 60 }}>
+                <p className="text-xs font-bold uppercase text-blue-600">Project origin</p>
+                <p className="mt-1 font-bold">Create project path</p>
+                <p className="mt-1 text-xs text-slate-500">Project CAD software</p>
+              </div>
+              <div
+                className="absolute w-44 rounded-xl border-2 border-blue-300 bg-blue-50 p-4 opacity-70 shadow-sm"
+                style={{ left: 260, top: 60 }}
+              >
+                <p className="text-xs font-bold uppercase text-blue-600">Primary 1</p>
+                <p className="mt-1 font-bold">baseline_model.step</p>
+                <p className="mt-1 text-xs text-slate-500">Current approved model</p>
+              </div>
+              <div className={nodeClass(4, "border-emerald-300 bg-emerald-50")} style={{ left: 946, top: 60 }}>
+                <p className="text-xs font-bold uppercase text-emerald-700">Primary 2 · Current</p>
+                <p className="mt-1 font-bold">accepted_model.step</p>
+                <p className="mt-1 text-xs text-slate-500">Merged from branch</p>
+              </div>
+              <div className={nodeClass(1, "border-amber-300 bg-amber-50")} style={{ left: 304, top: 225 }}>
+                <p className="text-xs font-bold uppercase text-amber-700">Working branch</p>
+                <p className="mt-1 font-bold">Contributor branch</p>
+                <p className="mt-1 text-xs text-slate-500">Branch CAD software</p>
+              </div>
+              <div className={nodeClass(2, "border-amber-300 bg-amber-50")} style={{ left: 560, top: 235 }}>
+                <p className="text-xs font-bold uppercase text-amber-700">Version 1</p>
+                <p className="mt-1 font-bold">working_copy.step</p>
+                <p className="mt-1 text-xs text-slate-500">Upload and describe</p>
+              </div>
+              <div className={nodeClass(3, "border-amber-300 bg-amber-50")} style={{ left: 776, top: 235 }}>
+                <p className="text-xs font-bold uppercase text-amber-700">Latest version</p>
+                <p className="mt-1 font-bold">reviewed_copy.step</p>
+                <p className="mt-1 text-xs text-slate-500">Review before merge</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-5 rounded-xl border border-blue-200 bg-blue-50 p-5">
+            <p className="text-xs font-bold uppercase tracking-wider text-blue-600">
+              Step {currentStep + 1}
+            </p>
+            <h4 className="mt-1 text-xl font-bold">{step.title}</h4>
+            <p className="mt-2 leading-6 text-slate-600">{step.text}</p>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between border-t border-slate-200 px-6 py-4 sm:px-8">
+          <button
+            className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+            disabled={currentStep === 0}
+            onClick={() => setCurrentStep((value) => Math.max(0, value - 1))}
+            type="button"
+          >
+            ← Back
+          </button>
+          {currentStep < steps.length - 1 ? (
+            <button
+              className="rounded-lg bg-blue-600 px-5 py-2 text-sm font-semibold text-white hover:bg-blue-700"
+              onClick={() => setCurrentStep((value) => Math.min(steps.length - 1, value + 1))}
+              type="button"
+            >
+              Next →
+            </button>
+          ) : (
+            <button
+              className="rounded-lg bg-emerald-600 px-5 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
+              onClick={onClose}
+              type="button"
+            >
+              Finish walkthrough
+            </button>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
 type ProjectWorkspaceProps = {
   project: ProjectSummary;
   branches: BranchRecord[];
@@ -1108,6 +1710,7 @@ type ProjectWorkspaceProps = {
   ownedActiveBranches: BranchRecord[];
   selectedBranchId: string;
   branchName: string;
+  branchSoftware: string;
   versionDescription: string;
   showBranchForm: boolean;
   isLoading: boolean;
@@ -1115,12 +1718,14 @@ type ProjectWorkspaceProps = {
   isUploading: boolean;
   mergingBranchId: DatabaseId | null;
   deletingBranchId: DatabaseId | null;
+  renamingBranchId: DatabaseId | null;
   fileInputRef: React.RefObject<HTMLInputElement | null>;
   uploadPanelRef: React.RefObject<HTMLElement | null>;
   onBack: () => void;
   onShowBranchForm: () => void;
   onCancelBranch: () => void;
   onBranchNameChange: (value: string) => void;
+  onBranchSoftwareChange: (value: string) => void;
   onCreateBranch: (event: FormEvent<HTMLFormElement>) => void;
   onSelectBranch: (value: string) => void;
   onSelectBranchForUpload: (branch: BranchRecord) => void;
@@ -1128,6 +1733,7 @@ type ProjectWorkspaceProps = {
   onVersionDescriptionChange: (value: string) => void;
   onUploadVersion: () => void;
   onMergeBranch: (branch: BranchRecord) => void;
+  onRenameBranch: (branch: BranchRecord) => void;
   onDeleteBranch: (branch: BranchRecord) => void;
 };
 
@@ -1142,6 +1748,7 @@ function ProjectWorkspace({
   ownedActiveBranches,
   selectedBranchId,
   branchName,
+  branchSoftware,
   versionDescription,
   showBranchForm,
   isLoading,
@@ -1149,12 +1756,14 @@ function ProjectWorkspace({
   isUploading,
   mergingBranchId,
   deletingBranchId,
+  renamingBranchId,
   fileInputRef,
   uploadPanelRef,
   onBack,
   onShowBranchForm,
   onCancelBranch,
   onBranchNameChange,
+  onBranchSoftwareChange,
   onCreateBranch,
   onSelectBranch,
   onSelectBranchForUpload,
@@ -1162,8 +1771,25 @@ function ProjectWorkspace({
   onVersionDescriptionChange,
   onUploadVersion,
   onMergeBranch,
+  onRenameBranch,
   onDeleteBranch,
 }: ProjectWorkspaceProps) {
+  const [showPrimaryOnly, setShowPrimaryOnly] = useState(false);
+  const treeScrollerRef = useRef<HTMLDivElement>(null);
+
+  function goToCurrentModel() {
+    const scroller = treeScrollerRef.current;
+    if (!scroller) return;
+    const currentPrimary = scroller.querySelector<HTMLElement>(
+      '[data-current-primary="true"]',
+    );
+    if (currentPrimary) {
+      currentPrimary.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+      return;
+    }
+    scroller.scrollTo({ left: scroller.scrollWidth, behavior: "smooth" });
+  }
+
   return (
     <>
       <section className="mt-8 rounded-2xl border border-white/15 bg-[linear-gradient(135deg,_#0d3157_0%,_#061a33_100%)] px-6 py-7 text-white shadow-2xl sm:px-8">
@@ -1181,6 +1807,9 @@ function ProjectWorkspace({
               Project branch tree
             </p>
             <h2 className="mt-2 text-3xl font-bold sm:text-4xl">{project.name}</h2>
+            <span className="mt-3 inline-flex rounded-full bg-blue-500/20 px-3 py-1 text-xs font-bold text-blue-100 ring-1 ring-blue-300/30">
+              Project CAD · {project.cad_software || "Not specified"}
+            </span>
             <p className="mt-3 max-w-3xl text-slate-300">
               {project.description || "No project description yet."}
             </p>
@@ -1204,13 +1833,34 @@ function ProjectWorkspace({
               Branches move left to right. Merged versions return to the primary path.
             </p>
           </div>
-          <button
-            className="rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700"
-            onClick={onShowBranchForm}
-            type="button"
-          >
-            + New Working Branch
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              className="rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+              onClick={goToCurrentModel}
+              type="button"
+            >
+              Go to current →
+            </button>
+            <button
+              aria-pressed={showPrimaryOnly}
+              className={`rounded-lg border px-4 py-2.5 text-sm font-semibold transition ${
+                showPrimaryOnly
+                  ? "border-blue-600 bg-blue-600 text-white"
+                  : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+              }`}
+              onClick={() => setShowPrimaryOnly((current) => !current)}
+              type="button"
+            >
+              {showPrimaryOnly ? "Show all branches" : "Primary only"}
+            </button>
+            <button
+              className="rounded-lg bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-700"
+              onClick={onShowBranchForm}
+              type="button"
+            >
+              + New Working Branch
+            </button>
+          </div>
         </div>
 
         {showBranchForm ? (
@@ -1218,7 +1868,7 @@ function ProjectWorkspace({
             className="border-b border-blue-100 bg-blue-50 px-6 py-5"
             onSubmit={onCreateBranch}
           >
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-end">
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-[1fr_1fr_auto] lg:items-end">
               <label className="flex-1 text-sm font-semibold text-slate-700">
                 Branch name
                 <input
@@ -1228,6 +1878,18 @@ function ProjectWorkspace({
                   onChange={(event) => onBranchNameChange(event.target.value)}
                   disabled={isCreatingBranch}
                   maxLength={80}
+                />
+              </label>
+              <label className="text-sm font-semibold text-slate-700">
+                CAD software used on this branch
+                <input
+                  className="mt-2 w-full rounded-lg border border-blue-200 bg-white px-4 py-3 font-normal outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                  placeholder="Creo, Fusion 360, SolidWorks…"
+                  value={branchSoftware}
+                  onChange={(event) => onBranchSoftwareChange(event.target.value)}
+                  disabled={isCreatingBranch}
+                  maxLength={80}
+                  required
                 />
               </label>
               <div className="flex gap-3">
@@ -1253,7 +1915,7 @@ function ProjectWorkspace({
           </form>
         ) : null}
 
-        <div className="overflow-x-auto px-6 py-7">
+        <div className="overflow-x-auto px-6 py-7" ref={treeScrollerRef}>
           {isLoading ? (
             <p className="py-16 text-center font-medium text-slate-500" role="status">
               Loading the branch tree…
@@ -1265,10 +1927,13 @@ function ProjectWorkspace({
               primaryHistory={primaryHistory}
               currentUserId={currentUserId}
               isAdmin={isAdmin}
+              primaryOnly={showPrimaryOnly}
               mergingBranchId={mergingBranchId}
               deletingBranchId={deletingBranchId}
+              renamingBranchId={renamingBranchId}
               onSelectBranchForUpload={onSelectBranchForUpload}
               onMergeBranch={onMergeBranch}
+              onRenameBranch={onRenameBranch}
               onDeleteBranch={onDeleteBranch}
             />
           )}
@@ -1373,7 +2038,9 @@ const GRAPH_NODE_GAP = 300;
 
 type BranchGraphLayout = {
   branch: BranchRecord;
+  allVersions: CadPackage[];
   versions: CadPackage[];
+  isCollapsed: boolean;
   baseCenterX: number;
   centerY: number;
   nodeLefts: number[];
@@ -1386,10 +2053,13 @@ type VersionTreeGraphProps = {
   primaryHistory: CadPackage[];
   currentUserId: string;
   isAdmin: boolean;
+  primaryOnly: boolean;
   mergingBranchId: DatabaseId | null;
   deletingBranchId: DatabaseId | null;
+  renamingBranchId: DatabaseId | null;
   onSelectBranchForUpload: (branch: BranchRecord) => void;
   onMergeBranch: (branch: BranchRecord) => void;
+  onRenameBranch: (branch: BranchRecord) => void;
   onDeleteBranch: (branch: BranchRecord) => void;
 };
 
@@ -1399,19 +2069,48 @@ function VersionTreeGraph({
   primaryHistory,
   currentUserId,
   isAdmin,
+  primaryOnly,
   mergingBranchId,
   deletingBranchId,
+  renamingBranchId,
   onSelectBranchForUpload,
   onMergeBranch,
+  onRenameBranch,
   onDeleteBranch,
 }: VersionTreeGraphProps) {
+  const [collapsedBranchIds, setCollapsedBranchIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const graphBranches = primaryOnly ? [] : branches;
+  const allBranchesCollapsed =
+    graphBranches.length > 0 &&
+    graphBranches.every((branch) => collapsedBranchIds.has(String(branch.id)));
+
+  function toggleBranchCollapsed(branchId: DatabaseId) {
+    const key = String(branchId);
+    setCollapsedBranchIds((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  function toggleAllBranches() {
+    setCollapsedBranchIds(
+      allBranchesCollapsed
+        ? new Set()
+        : new Set(graphBranches.map((branch) => String(branch.id))),
+    );
+  }
+
   const rootCenterX = GRAPH_ROOT_LEFT + GRAPH_ROOT_WIDTH / 2;
   const primaryLeftById = new Map<string, number>();
   let previousPrimaryLeft = GRAPH_ROOT_LEFT;
 
   for (const [index, primaryVersion] of primaryHistory.entries()) {
     let primaryLeft = index === 0 ? 260 : previousPrimaryLeft + 330;
-    const mergedBranch = branches.find((branch) => {
+    const mergedBranch = graphBranches.find((branch) => {
       if (!branch.merged_at) return false;
       const versions = packages
         .filter((cadPackage) => String(cadPackage.branch_id) === String(branch.id))
@@ -1420,9 +2119,11 @@ function VersionTreeGraph({
     });
 
     if (mergedBranch) {
-      const versions = packages.filter(
-        (cadPackage) => String(cadPackage.branch_id) === String(mergedBranch.id),
-      );
+      const versions = collapsedBranchIds.has(String(mergedBranch.id))
+        ? []
+        : packages.filter(
+            (cadPackage) => String(cadPackage.branch_id) === String(mergedBranch.id),
+          );
       const baseLeft = mergedBranch.base_package_id
         ? primaryLeftById.get(String(mergedBranch.base_package_id))
         : undefined;
@@ -1438,10 +2139,12 @@ function VersionTreeGraph({
     previousPrimaryLeft = primaryLeft;
   }
 
-  const branchLayouts: BranchGraphLayout[] = branches.map((branch, branchIndex) => {
-    const versions = packages
+  const branchLayouts: BranchGraphLayout[] = graphBranches.map((branch, branchIndex) => {
+    const allVersions = packages
       .filter((cadPackage) => String(cadPackage.branch_id) === String(branch.id))
       .sort((first, second) => first.version_number - second.version_number);
+    const isCollapsed = collapsedBranchIds.has(String(branch.id));
+    const versions = isCollapsed ? [] : allVersions;
     const exactBaseLeft = branch.base_package_id
       ? primaryLeftById.get(String(branch.base_package_id))
       : undefined;
@@ -1457,7 +2160,7 @@ function VersionTreeGraph({
       (_, versionIndex) =>
         baseCenterX + GRAPH_BRANCH_NODE_OFFSET + versionIndex * GRAPH_NODE_GAP,
     );
-    const latestVersion = versions.at(-1);
+    const latestVersion = allVersions.at(-1);
     const mergeTargetLeft =
       branch.merged_at && latestVersion
         ? primaryLeftById.get(String(latestVersion.id))
@@ -1465,7 +2168,9 @@ function VersionTreeGraph({
 
     return {
       branch,
+      allVersions,
       versions,
+      isCollapsed,
       baseCenterX,
       centerY: GRAPH_BRANCH_START_Y + branchIndex * GRAPH_BRANCH_GAP,
       nodeLefts,
@@ -1488,8 +2193,8 @@ function VersionTreeGraph({
   );
   const canvasWidth = Math.max(940, furthestPrimaryRight, furthestBranchRight) + 80;
   const canvasHeight =
-    branches.length > 0
-      ? GRAPH_BRANCH_START_Y + (branches.length - 1) * GRAPH_BRANCH_GAP + 150
+    graphBranches.length > 0
+      ? GRAPH_BRANCH_START_Y + (graphBranches.length - 1) * GRAPH_BRANCH_GAP + 150
       : 330;
   const firstPrimaryLeft = primaryHistory[0]
     ? primaryLeftById.get(String(primaryHistory[0].id))
@@ -1511,6 +2216,15 @@ function VersionTreeGraph({
         <span className="flex items-center gap-2">
           <span className="h-2.5 w-6 rounded-full bg-emerald-500" /> Merged branch
         </span>
+        {!primaryOnly && graphBranches.length > 0 ? (
+          <button
+            className="ml-auto rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50"
+            onClick={toggleAllBranches}
+            type="button"
+          >
+            {allBranchesCollapsed ? "Expand all branches" : "Collapse all branches"}
+          </button>
+        ) : null}
       </div>
 
       <div
@@ -1655,9 +2369,9 @@ function VersionTreeGraph({
 
         {branchLayouts.map((layout) => {
           const ownsBranch = layout.branch.owner_id === currentUserId;
-          const canDeleteBranch = ownsBranch || isAdmin;
+          const canManageBranch = ownsBranch || isAdmin;
           const canMerge =
-            ownsBranch && !layout.branch.merged_at && layout.versions.length > 0;
+            ownsBranch && !layout.branch.merged_at && layout.allVersions.length > 0;
           const labelLeft = layout.baseCenterX + 28;
 
           return (
@@ -1679,7 +2393,7 @@ function VersionTreeGraph({
                   <p className="truncate text-sm font-bold" title={layout.branch.name}>
                     {layout.branch.name}
                   </p>
-                  {canDeleteBranch ? (
+                  {canManageBranch ? (
                     <details className="relative shrink-0">
                       <summary
                         aria-label={`More options for ${layout.branch.name}`}
@@ -1688,6 +2402,16 @@ function VersionTreeGraph({
                         ⋯
                       </summary>
                       <div className="absolute right-0 z-20 mt-1 w-40 rounded-lg border border-slate-200 bg-white p-1 shadow-xl">
+                        <button
+                          className="w-full rounded-md px-2.5 py-2 text-left text-[11px] font-bold text-slate-700 hover:bg-slate-100 disabled:opacity-60"
+                          onClick={() => onRenameBranch(layout.branch)}
+                          type="button"
+                          disabled={renamingBranchId !== null || deletingBranchId !== null}
+                        >
+                          {String(renamingBranchId) === String(layout.branch.id)
+                            ? "Renaming…"
+                            : "Rename branch"}
+                        </button>
                         <button
                           className="w-full rounded-md px-2.5 py-2 text-left text-[11px] font-bold text-red-600 hover:bg-red-50 disabled:opacity-60"
                           onClick={() => onDeleteBranch(layout.branch)}
@@ -1705,7 +2429,19 @@ function VersionTreeGraph({
                 <p className="mt-1 truncate text-[11px] text-slate-500">
                   {layout.branch.owner_name}
                 </p>
+                <p className="mt-1 truncate text-[10px] font-bold text-blue-600">
+                  {layout.branch.cad_software || "CAD software not specified"}
+                </p>
                 <div className="mt-2 flex flex-wrap gap-1.5">
+                  {layout.allVersions.length > 0 ? (
+                    <button
+                      className="rounded border border-slate-300 px-2 py-1 text-[10px] font-bold hover:bg-slate-50"
+                      onClick={() => toggleBranchCollapsed(layout.branch.id)}
+                      type="button"
+                    >
+                      {layout.isCollapsed ? "Expand" : "Collapse"}
+                    </button>
+                  ) : null}
                   {ownsBranch && !layout.branch.merged_at ? (
                     <button
                       className="rounded border border-slate-300 px-2 py-1 text-[10px] font-bold hover:bg-slate-50"
@@ -1749,7 +2485,9 @@ function VersionTreeGraph({
                     top: layout.centerY - 40,
                   }}
                 >
-                  No versions uploaded yet
+                  {layout.isCollapsed
+                    ? `${pluralize(layout.allVersions.length, "version")} collapsed`
+                    : "No versions uploaded yet"}
                 </div>
               ) : null}
 
@@ -1796,6 +2534,7 @@ function GraphVersionNode({
       className={`absolute h-[142px] w-60 rounded-xl border-2 bg-white p-4 shadow-md ${toneClasses[tone]} ${
         cadPackage.is_primary ? "ring-4 ring-blue-100" : ""
       }`}
+      data-current-primary={cadPackage.is_primary ? "true" : undefined}
       style={{ left, top }}
     >
       <div className="flex items-center justify-between gap-3">
@@ -1803,6 +2542,10 @@ function GraphVersionNode({
         {cadPackage.is_primary ? (
           <span className="rounded-full bg-blue-100 px-2 py-1 text-[9px] font-bold uppercase text-blue-700">
             Current
+          </span>
+        ) : cadPackage.is_archived ? (
+          <span className="rounded-full bg-slate-200 px-2 py-1 text-[9px] font-bold uppercase text-slate-600">
+            Archived
           </span>
         ) : null}
       </div>
@@ -1814,13 +2557,22 @@ function GraphVersionNode({
       </p>
       <div className="mt-2 flex items-center justify-between border-t border-slate-100 pt-2 text-[11px]">
         <span className="max-w-28 truncate text-slate-500">{cadPackage.owner_name}</span>
-        <a
-          className="font-bold text-blue-600 hover:text-blue-700"
-          href={cadPackage.downloadUrl}
-          download={cadPackage.file_name}
-        >
-          Download
-        </a>
+        {cadPackage.is_archived ? (
+          <span
+            className="font-bold text-slate-400"
+            title={cadPackage.archive_name ?? "Exported archive"}
+          >
+            Offline
+          </span>
+        ) : (
+          <a
+            className="font-bold text-blue-600 hover:text-blue-700"
+            href={cadPackage.downloadUrl}
+            download={cadPackage.file_name}
+          >
+            Download
+          </a>
+        )}
       </div>
     </article>
   );
