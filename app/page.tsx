@@ -141,6 +141,7 @@ export default function Home() {
   const [projectSoftware, setProjectSoftware] = useState("");
   const [branchName, setBranchName] = useState("");
   const [branchSoftware, setBranchSoftware] = useState("");
+  const [branchBasePackageId, setBranchBasePackageId] = useState("");
   const [selectedBranchId, setSelectedBranchId] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [versionDescription, setVersionDescription] = useState("");
@@ -455,6 +456,7 @@ export default function Home() {
       setPackages([]);
       setBranchName(`${currentUser}'s branch`);
       setBranchSoftware(trimmedSoftware);
+      setBranchBasePackageId("");
       setShowBranchForm(true);
       setStatusMessage(`${newProject.name} is ready. Create its first working branch.`);
       await loadProjects();
@@ -472,6 +474,7 @@ export default function Home() {
     setShowBranchForm(false);
     setBranchName(`${currentUser}'s branch`);
     setBranchSoftware(project.cad_software ?? "");
+    setBranchBasePackageId(primaryPackage ? String(primaryPackage.id) : "");
     setSelectedBranchId("");
     await loadWorkspace(project);
   }
@@ -482,6 +485,11 @@ export default function Home() {
 
     const trimmedName = branchName.trim();
     const trimmedSoftware = branchSoftware.trim();
+    const selectedBasePackage = branchBasePackageId
+      ? packages.find(
+          (cadPackage) => String(cadPackage.id) === branchBasePackageId,
+        )
+      : null;
     if (!trimmedName) {
       setErrorMessage("Give your branch a name.");
       return;
@@ -490,6 +498,16 @@ export default function Home() {
 
     if (!trimmedSoftware) {
       setErrorMessage("Enter the CAD software used for this branch.");
+      return;
+    }
+
+    if (branchBasePackageId && !selectedBasePackage) {
+      setErrorMessage("Choose a valid version to branch from.");
+      return;
+    }
+
+    if (selectedBasePackage?.is_archived) {
+      setErrorMessage("That file is archived offline and cannot start a new branch.");
       return;
     }
 
@@ -506,8 +524,8 @@ export default function Home() {
           cad_software: trimmedSoftware,
           owner_id: currentUserId,
           owner_name: currentUser,
-          base_package_id: primaryPackage?.id ?? null,
-          branched_from_file_name: primaryPackage?.file_name ?? null,
+          base_package_id: selectedBasePackage?.id ?? null,
+          branched_from_file_name: selectedBasePackage?.file_name ?? null,
         })
         .select(
           "id, project_id, name, cad_software, owner_id, owner_name, base_package_id, branched_from_file_name, merged_at, created_at",
@@ -520,6 +538,7 @@ export default function Home() {
       setShowBranchForm(false);
       setBranchName(`${currentUser}'s branch`);
       setBranchSoftware(selectedProject.cad_software ?? "");
+      setBranchBasePackageId(primaryPackage ? String(primaryPackage.id) : "");
       setSelectedBranchId(String(newBranch.id));
       setStatusMessage(`${newBranch.name} created. Upload its first CAD version.`);
       await Promise.all([loadWorkspace(selectedProject), loadProjects()]);
@@ -1011,6 +1030,7 @@ export default function Home() {
       setVersionDescription("");
       setProjectSoftware("");
       setBranchSoftware("");
+      setBranchBasePackageId("");
       if (fileInputRef.current) fileInputRef.current.value = "";
     } catch (error) {
       setErrorMessage(`Could not sign out. ${getErrorMessage(error)}`);
@@ -1028,6 +1048,7 @@ export default function Home() {
     setShowBranchForm(false);
     setShowExampleGuide(false);
     setSelectedBranchId("");
+    setBranchBasePackageId("");
     void loadProjects();
   }
 
@@ -1191,6 +1212,7 @@ export default function Home() {
             selectedBranchId={selectedBranchId}
             branchName={branchName}
             branchSoftware={branchSoftware}
+            branchBasePackageId={branchBasePackageId}
             versionDescription={versionDescription}
             showBranchForm={showBranchForm}
             isLoading={isLoadingWorkspace}
@@ -1205,12 +1227,21 @@ export default function Home() {
             onShowBranchForm={() => {
               setShowBranchForm(true);
               setBranchSoftware(selectedProject.cad_software ?? "");
+              setBranchBasePackageId(primaryPackage ? String(primaryPackage.id) : "");
               setErrorMessage("");
               setStatusMessage("");
+            }}
+            onShowBranchFromPackage={(cadPackage) => {
+              setShowBranchForm(true);
+              setBranchSoftware(selectedProject.cad_software ?? "");
+              setBranchBasePackageId(String(cadPackage.id));
+              setErrorMessage("");
+              setStatusMessage(`Starting a new branch from ${cadPackage.file_name}.`);
             }}
             onCancelBranch={() => setShowBranchForm(false)}
             onBranchNameChange={setBranchName}
             onBranchSoftwareChange={setBranchSoftware}
+            onBranchBasePackageIdChange={setBranchBasePackageId}
             onCreateBranch={createBranch}
             onSelectBranch={setSelectedBranchId}
             onSelectBranchForUpload={selectBranchForUpload}
@@ -1711,6 +1742,7 @@ type ProjectWorkspaceProps = {
   selectedBranchId: string;
   branchName: string;
   branchSoftware: string;
+  branchBasePackageId: string;
   versionDescription: string;
   showBranchForm: boolean;
   isLoading: boolean;
@@ -1723,9 +1755,11 @@ type ProjectWorkspaceProps = {
   uploadPanelRef: React.RefObject<HTMLElement | null>;
   onBack: () => void;
   onShowBranchForm: () => void;
+  onShowBranchFromPackage: (cadPackage: CadPackage) => void;
   onCancelBranch: () => void;
   onBranchNameChange: (value: string) => void;
   onBranchSoftwareChange: (value: string) => void;
+  onBranchBasePackageIdChange: (value: string) => void;
   onCreateBranch: (event: FormEvent<HTMLFormElement>) => void;
   onSelectBranch: (value: string) => void;
   onSelectBranchForUpload: (branch: BranchRecord) => void;
@@ -1749,6 +1783,7 @@ function ProjectWorkspace({
   selectedBranchId,
   branchName,
   branchSoftware,
+  branchBasePackageId,
   versionDescription,
   showBranchForm,
   isLoading,
@@ -1761,9 +1796,11 @@ function ProjectWorkspace({
   uploadPanelRef,
   onBack,
   onShowBranchForm,
+  onShowBranchFromPackage,
   onCancelBranch,
   onBranchNameChange,
   onBranchSoftwareChange,
+  onBranchBasePackageIdChange,
   onCreateBranch,
   onSelectBranch,
   onSelectBranchForUpload,
@@ -1789,6 +1826,10 @@ function ProjectWorkspace({
     }
     scroller.scrollTo({ left: scroller.scrollWidth, behavior: "smooth" });
   }
+
+  const selectedBranchBase = packages.find(
+    (cadPackage) => String(cadPackage.id) === branchBasePackageId,
+  );
 
   return (
     <>
@@ -1868,7 +1909,7 @@ function ProjectWorkspace({
             className="border-b border-blue-100 bg-blue-50 px-6 py-5"
             onSubmit={onCreateBranch}
           >
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-[1fr_1fr_auto] lg:items-end">
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3 lg:items-end">
               <label className="flex-1 text-sm font-semibold text-slate-700">
                 Branch name
                 <input
@@ -1892,7 +1933,56 @@ function ProjectWorkspace({
                   required
                 />
               </label>
-              <div className="flex gap-3">
+              <label className="text-sm font-semibold text-slate-700">
+                Branch from
+                <select
+                  className="mt-2 w-full rounded-lg border border-blue-200 bg-white px-4 py-3 font-normal outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
+                  value={branchBasePackageId}
+                  onChange={(event) => onBranchBasePackageIdChange(event.target.value)}
+                  disabled={isCreatingBranch}
+                >
+                  <option value="">Project origin (no primary file)</option>
+                  {primaryHistory.map((cadPackage, index) => (
+                    <option
+                      disabled={cadPackage.is_archived}
+                      key={cadPackage.id}
+                      value={String(cadPackage.id)}
+                    >
+                      Primary {index + 1}: {cadPackage.file_name}
+                      {cadPackage.is_primary ? " (current)" : ""}
+                      {cadPackage.is_archived ? " (archived offline)" : ""}
+                    </option>
+                  ))}
+                  {branches.map((branch) => {
+                    const branchVersions = packages
+                      .filter(
+                        (cadPackage) =>
+                          String(cadPackage.branch_id) === String(branch.id) &&
+                          !primaryHistory.some(
+                            (primaryPackage) =>
+                              String(primaryPackage.id) === String(cadPackage.id),
+                          ),
+                      )
+                      .sort((first, second) => first.version_number - second.version_number);
+
+                    return branchVersions.length > 0 ? (
+                      <optgroup key={branch.id} label={branch.name}>
+                        {branchVersions.map((cadPackage) => (
+                          <option
+                            disabled={cadPackage.is_archived}
+                            key={cadPackage.id}
+                            value={String(cadPackage.id)}
+                          >
+                            Version {cadPackage.version_number}: {cadPackage.file_name}
+                            {cadPackage.is_archived ? " (archived offline)" : ""}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ) : null;
+                  })}
+                </select>
+              </label>
+              <div className="flex gap-3 lg:col-span-3 lg:justify-end">
                 <button
                   className="rounded-lg border border-slate-300 bg-white px-4 py-3 font-semibold hover:bg-slate-50"
                   onClick={onCancelBranch}
@@ -1910,7 +2000,8 @@ function ProjectWorkspace({
               </div>
             </div>
             <p className="mt-3 text-xs text-slate-500">
-              Starts from {primaryPackage?.file_name ?? "an empty primary path"}.
+              Starts from {selectedBranchBase?.file_name ?? "the project origin"}. Choose
+              any earlier primary version to create a branch from that point in the tree.
             </p>
           </form>
         ) : null}
@@ -1932,6 +2023,7 @@ function ProjectWorkspace({
               deletingBranchId={deletingBranchId}
               renamingBranchId={renamingBranchId}
               onSelectBranchForUpload={onSelectBranchForUpload}
+              onShowBranchFromPackage={onShowBranchFromPackage}
               onMergeBranch={onMergeBranch}
               onRenameBranch={onRenameBranch}
               onDeleteBranch={onDeleteBranch}
@@ -2031,10 +2123,13 @@ const GRAPH_NODE_WIDTH = 240;
 const GRAPH_NODE_HEIGHT = 142;
 const GRAPH_PRIMARY_TOP = 34;
 const GRAPH_PRIMARY_CENTER_Y = GRAPH_PRIMARY_TOP + GRAPH_NODE_HEIGHT / 2;
-const GRAPH_BRANCH_START_Y = 290;
-const GRAPH_BRANCH_GAP = 230;
-const GRAPH_BRANCH_NODE_OFFSET = 250;
-const GRAPH_NODE_GAP = 300;
+const GRAPH_BRANCH_START_Y = 265;
+const GRAPH_BRANCH_GAP = 185;
+const GRAPH_BRANCH_NODE_OFFSET = 235;
+const GRAPH_NODE_GAP = 270;
+const GRAPH_MIN_ZOOM = 0.6;
+const GRAPH_MAX_ZOOM = 1.4;
+const GRAPH_ZOOM_STEP = 0.1;
 
 type BranchGraphLayout = {
   branch: BranchRecord;
@@ -2042,7 +2137,9 @@ type BranchGraphLayout = {
   versions: CadPackage[];
   isCollapsed: boolean;
   baseCenterX: number;
+  baseCenterY: number;
   centerY: number;
+  laneIndex: number;
   nodeLefts: number[];
   mergeTargetCenterX: number | null;
 };
@@ -2058,6 +2155,7 @@ type VersionTreeGraphProps = {
   deletingBranchId: DatabaseId | null;
   renamingBranchId: DatabaseId | null;
   onSelectBranchForUpload: (branch: BranchRecord) => void;
+  onShowBranchFromPackage: (cadPackage: CadPackage) => void;
   onMergeBranch: (branch: BranchRecord) => void;
   onRenameBranch: (branch: BranchRecord) => void;
   onDeleteBranch: (branch: BranchRecord) => void;
@@ -2074,6 +2172,7 @@ function VersionTreeGraph({
   deletingBranchId,
   renamingBranchId,
   onSelectBranchForUpload,
+  onShowBranchFromPackage,
   onMergeBranch,
   onRenameBranch,
   onDeleteBranch,
@@ -2081,6 +2180,7 @@ function VersionTreeGraph({
   const [collapsedBranchIds, setCollapsedBranchIds] = useState<Set<string>>(
     () => new Set(),
   );
+  const [zoom, setZoom] = useState(1);
   const graphBranches = primaryOnly ? [] : branches;
   const allBranchesCollapsed =
     graphBranches.length > 0 &&
@@ -2101,6 +2201,15 @@ function VersionTreeGraph({
       allBranchesCollapsed
         ? new Set()
         : new Set(graphBranches.map((branch) => String(branch.id))),
+    );
+  }
+
+  function changeZoom(direction: -1 | 1) {
+    setZoom((current) =>
+      Math.min(
+        GRAPH_MAX_ZOOM,
+        Math.max(GRAPH_MIN_ZOOM, Number((current + direction * GRAPH_ZOOM_STEP).toFixed(1))),
+      ),
     );
   }
 
@@ -2139,14 +2248,29 @@ function VersionTreeGraph({
     previousPrimaryLeft = primaryLeft;
   }
 
-  const branchLayouts: BranchGraphLayout[] = graphBranches.map((branch, branchIndex) => {
+  const packagePositions = new Map<string, { centerX: number; centerY: number }>(
+    primaryHistory.map((cadPackage) => {
+      const left = primaryLeftById.get(String(cadPackage.id))!;
+      return [
+        String(cadPackage.id),
+        { centerX: left + GRAPH_NODE_WIDTH / 2, centerY: GRAPH_PRIMARY_CENTER_Y },
+      ];
+    }),
+  );
+
+  const branchLayouts: BranchGraphLayout[] = [...graphBranches]
+    .sort(
+      (first, second) =>
+        new Date(first.created_at).getTime() - new Date(second.created_at).getTime(),
+    )
+    .map((branch) => {
     const allVersions = packages
       .filter((cadPackage) => String(cadPackage.branch_id) === String(branch.id))
       .sort((first, second) => first.version_number - second.version_number);
     const isCollapsed = collapsedBranchIds.has(String(branch.id));
     const versions = isCollapsed ? [] : allVersions;
-    const exactBaseLeft = branch.base_package_id
-      ? primaryLeftById.get(String(branch.base_package_id))
+    const exactBasePosition = branch.base_package_id
+      ? packagePositions.get(String(branch.base_package_id))
       : undefined;
     const filenameBase = [...primaryHistory]
       .reverse()
@@ -2154,30 +2278,86 @@ function VersionTreeGraph({
     const filenameBaseLeft = filenameBase
       ? primaryLeftById.get(String(filenameBase.id))
       : undefined;
-    const baseLeft = exactBaseLeft ?? filenameBaseLeft;
-    const baseCenterX = baseLeft === undefined ? rootCenterX : baseLeft + GRAPH_NODE_WIDTH / 2;
-    const nodeLefts = versions.map(
+    const baseCenterX =
+      exactBasePosition?.centerX ??
+      (filenameBaseLeft === undefined
+        ? rootCenterX
+        : filenameBaseLeft + GRAPH_NODE_WIDTH / 2);
+    const baseCenterY = exactBasePosition?.centerY ?? GRAPH_PRIMARY_CENTER_Y;
+    const allNodeLefts = allVersions.map(
       (_, versionIndex) =>
         baseCenterX + GRAPH_BRANCH_NODE_OFFSET + versionIndex * GRAPH_NODE_GAP,
     );
+    const nodeLefts = isCollapsed ? [] : allNodeLefts;
     const latestVersion = allVersions.at(-1);
     const mergeTargetLeft =
       branch.merged_at && latestVersion
         ? primaryLeftById.get(String(latestVersion.id))
         : undefined;
 
-    return {
+    const layout = {
       branch,
       allVersions,
       versions,
       isCollapsed,
       baseCenterX,
-      centerY: GRAPH_BRANCH_START_Y + branchIndex * GRAPH_BRANCH_GAP,
+      baseCenterY,
+      centerY: GRAPH_BRANCH_START_Y,
+      laneIndex: 0,
       nodeLefts,
       mergeTargetCenterX:
         mergeTargetLeft === undefined ? null : mergeTargetLeft + GRAPH_NODE_WIDTH / 2,
     };
+
+    for (const [index, cadPackage] of allVersions.entries()) {
+      packagePositions.set(String(cadPackage.id), {
+        centerX: allNodeLefts[index] + GRAPH_NODE_WIDTH / 2,
+        centerY: layout.centerY,
+      });
+    }
+
+    return layout;
   });
+
+  const laneRightEdges: number[] = [];
+  for (const layout of [...branchLayouts].sort(
+    (first, second) => first.baseCenterX - second.baseCenterX,
+  )) {
+    const resolvedBasePosition = layout.branch.base_package_id
+      ? packagePositions.get(String(layout.branch.base_package_id))
+      : undefined;
+    if (resolvedBasePosition) {
+      layout.baseCenterX = resolvedBasePosition.centerX;
+      layout.baseCenterY = resolvedBasePosition.centerY;
+    }
+    const branchLeft = layout.baseCenterX;
+    const lastNodeRight =
+      (layout.nodeLefts.at(-1) ?? layout.baseCenterX + GRAPH_BRANCH_NODE_OFFSET) +
+      GRAPH_NODE_WIDTH;
+    const branchRight = Math.max(
+      lastNodeRight,
+      layout.mergeTargetCenterX ?? branchLeft,
+    );
+    const availableLane = laneRightEdges.findIndex(
+      (rightEdge) => rightEdge + 50 < branchLeft,
+    );
+    const laneIndex = availableLane === -1 ? laneRightEdges.length : availableLane;
+
+    layout.laneIndex = laneIndex;
+    layout.centerY = GRAPH_BRANCH_START_Y + laneIndex * GRAPH_BRANCH_GAP;
+    laneRightEdges[laneIndex] = branchRight;
+
+    for (const [index, cadPackage] of layout.allVersions.entries()) {
+      packagePositions.set(String(cadPackage.id), {
+        centerX:
+          layout.baseCenterX +
+          GRAPH_BRANCH_NODE_OFFSET +
+          index * GRAPH_NODE_GAP +
+          GRAPH_NODE_WIDTH / 2,
+        centerY: layout.centerY,
+      });
+    }
+  }
 
   const furthestPrimaryRight = Math.max(
     GRAPH_ROOT_LEFT + GRAPH_ROOT_WIDTH,
@@ -2194,7 +2374,10 @@ function VersionTreeGraph({
   const canvasWidth = Math.max(940, furthestPrimaryRight, furthestBranchRight) + 80;
   const canvasHeight =
     graphBranches.length > 0
-      ? GRAPH_BRANCH_START_Y + (graphBranches.length - 1) * GRAPH_BRANCH_GAP + 150
+      ? GRAPH_BRANCH_START_Y +
+        Math.max(0, ...branchLayouts.map((layout) => layout.laneIndex)) *
+          GRAPH_BRANCH_GAP +
+        150
       : 330;
   const firstPrimaryLeft = primaryHistory[0]
     ? primaryLeftById.get(String(primaryHistory[0].id))
@@ -2205,7 +2388,7 @@ function VersionTreeGraph({
       : firstPrimaryLeft + GRAPH_NODE_WIDTH / 2;
 
   return (
-    <div className="min-w-[900px]">
+    <div>
       <div className="mb-4 flex flex-wrap items-center gap-5 text-xs font-semibold text-slate-600">
         <span className="flex items-center gap-2">
           <span className="h-2.5 w-6 rounded-full bg-blue-500" /> Primary path
@@ -2216,23 +2399,65 @@ function VersionTreeGraph({
         <span className="flex items-center gap-2">
           <span className="h-2.5 w-6 rounded-full bg-emerald-500" /> Merged branch
         </span>
-        {!primaryOnly && graphBranches.length > 0 ? (
-          <button
-            className="ml-auto rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50"
-            onClick={toggleAllBranches}
-            type="button"
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          <div
+            aria-label="Tree zoom controls"
+            className="flex items-center rounded-lg border border-slate-300 bg-white shadow-sm"
+            role="group"
           >
-            {allBranchesCollapsed ? "Expand all branches" : "Collapse all branches"}
-          </button>
-        ) : null}
+            <button
+              aria-label="Zoom out"
+              className="h-8 w-9 rounded-l-lg text-base font-bold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300"
+              disabled={zoom <= GRAPH_MIN_ZOOM}
+              onClick={() => changeZoom(-1)}
+              type="button"
+            >
+              −
+            </button>
+            <button
+              aria-label="Reset tree zoom"
+              className="h-8 min-w-14 border-x border-slate-200 px-2 text-[11px] font-bold text-slate-600 hover:bg-slate-50"
+              onClick={() => setZoom(1)}
+              title="Reset zoom"
+              type="button"
+            >
+              {Math.round(zoom * 100)}%
+            </button>
+            <button
+              aria-label="Zoom in"
+              className="h-8 w-9 rounded-r-lg text-base font-bold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300"
+              disabled={zoom >= GRAPH_MAX_ZOOM}
+              onClick={() => changeZoom(1)}
+              type="button"
+            >
+              +
+            </button>
+          </div>
+          {!primaryOnly && graphBranches.length > 0 ? (
+            <button
+              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50"
+              onClick={toggleAllBranches}
+              type="button"
+            >
+              {allBranchesCollapsed ? "Expand all branches" : "Collapse all branches"}
+            </button>
+          ) : null}
+        </div>
       </div>
 
       <div
-        className="relative rounded-xl bg-slate-50/80 ring-1 ring-slate-100"
-        style={{ width: canvasWidth, height: canvasHeight }}
-        role="img"
-        aria-label="CAD version tree showing primary versions, branch origins, and merge paths"
+        style={{ width: canvasWidth * zoom, height: canvasHeight * zoom }}
       >
+        <div
+          className="relative origin-top-left rounded-xl bg-slate-50/80 ring-1 ring-slate-100"
+          style={{
+            width: canvasWidth,
+            height: canvasHeight,
+            transform: `scale(${zoom})`,
+          }}
+          role="img"
+          aria-label="CAD version tree showing primary versions, branch origins, and merge paths"
+        >
         <svg
           aria-hidden="true"
           className="absolute inset-0 h-full w-full"
@@ -2297,7 +2522,7 @@ function VersionTreeGraph({
             return (
               <g key={`branch-lines-${layout.branch.id}`}>
                 <path
-                  d={`M ${layout.baseCenterX} ${GRAPH_PRIMARY_CENTER_Y + GRAPH_NODE_HEIGHT / 2} V ${layout.centerY} H ${firstNodeCenterX}`}
+                  d={`M ${layout.baseCenterX} ${layout.baseCenterY + GRAPH_NODE_HEIGHT / 2} V ${layout.centerY} H ${firstNodeCenterX}`}
                   fill="none"
                   stroke={branchColor}
                   strokeLinecap="round"
@@ -2326,7 +2551,7 @@ function VersionTreeGraph({
                 ) : null}
                 <circle
                   cx={layout.baseCenterX}
-                  cy={GRAPH_PRIMARY_CENTER_Y + GRAPH_NODE_HEIGHT / 2}
+                  cy={layout.baseCenterY + GRAPH_NODE_HEIGHT / 2}
                   fill={branchColor}
                   r="5"
                   stroke="white"
@@ -2372,6 +2597,7 @@ function VersionTreeGraph({
           const canManageBranch = ownsBranch || isAdmin;
           const canMerge =
             ownsBranch && !layout.branch.merged_at && layout.allVersions.length > 0;
+          const latestBranchVersion = layout.allVersions.at(-1);
           const labelLeft = layout.baseCenterX + 28;
 
           return (
@@ -2442,6 +2668,16 @@ function VersionTreeGraph({
                       {layout.isCollapsed ? "Expand" : "Collapse"}
                     </button>
                   ) : null}
+                  {latestBranchVersion && !latestBranchVersion.is_archived ? (
+                    <button
+                      className="rounded border border-blue-300 bg-blue-50 px-2 py-1 text-[10px] font-bold text-blue-700 hover:bg-blue-100"
+                      onClick={() => onShowBranchFromPackage(latestBranchVersion)}
+                      title={`Start a new branch from ${latestBranchVersion.file_name}`}
+                      type="button"
+                    >
+                      Branch here
+                    </button>
+                  ) : null}
                   {ownsBranch && !layout.branch.merged_at ? (
                     <button
                       className="rounded border border-slate-300 px-2 py-1 text-[10px] font-bold hover:bg-slate-50"
@@ -2505,6 +2741,7 @@ function VersionTreeGraph({
             </div>
           );
         })}
+        </div>
       </div>
     </div>
   );
