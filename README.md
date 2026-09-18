@@ -1,36 +1,40 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# CAD Handoff
 
-## Getting Started
+CAD Handoff is a shared workspace for organizing CAD projects into primary histories and contributor branches. Team members enter with Supabase anonymous authentication, upload private CAD packages, and merge an agreed branch version back into its project's primary path.
 
-First, run the development server:
+## Supabase setup
+
+The app expects the Supabase URL and publishable key in a root `.env.local` file:
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+NEXT_PUBLIC_SUPABASE_URL=...
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=...
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Enable anonymous sign-ins in Supabase Authentication. Apply the SQL files in [`supabase/migrations`](supabase/migrations) through the Supabase SQL Editor in filename order before starting this version of the app. The migrations preserve existing `cad_packages` records in a generated legacy project and add project, branch, source-version, and merge support.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Local development
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Install dependencies and run the development server:
 
-## Learn More
+```bash
+npm install
+npm run dev
+```
 
-To learn more about Next.js, take a look at the following resources:
+Open [http://localhost:3000](http://localhost:3000), enter a username, and create a project path. Each project can contain multiple contributor branches and version uploads. Branch owners can merge their latest version into the project's primary history.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Verification
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+npm run lint
+npm run build
+```
 
-## Deploy on Vercel
+## GitHub Pages deployment
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+The workflow in `.github/workflows/deploy-pages.yml` builds and publishes the static export on every push to `main`.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+1. In GitHub, open **Settings → Secrets and variables → Actions** and add repository secrets named `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` using the values from `.env.local`.
+2. Open **Settings → Pages** and select **GitHub Actions** as the source.
+3. Push the repository's `main` branch. The deployed project site will be available at `https://thomasweik.github.io/cad-handoff/` after the workflow finishes.
